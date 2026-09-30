@@ -1,0 +1,2 @@
+include VALIDATION.md
+include tools/audit_public.py
