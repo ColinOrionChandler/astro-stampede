@@ -129,6 +129,9 @@ def test_http_assets_comparisons_blind_reveal_and_persistence(config):
     try:
         assert b'Astro Stampede' in request('/')
         assert b'configureLayout' in request('/static/app.js')
+        for asset in ('/', '/static/app.js', '/static/styles.css', '/static/trails.js'):
+            with urlopen(base + asset, timeout=10) as response:
+                assert response.headers['Cache-Control'] == 'no-store'
         objects = json.loads(request('/api/objects'))
         oid = objects[0]['object_id']
         data = request(f'/api/objects/{oid}/images'); images = json.loads(data)

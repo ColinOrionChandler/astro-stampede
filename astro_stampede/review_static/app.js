@@ -1033,10 +1033,12 @@ async function saveScoreBatch(payload, options = {}) {
 
 function buildScoreButtons() {
   const grid = $("scoreGrid");
+  const image = currentImage();
   grid.replaceChildren();
   for (let score = (state.summary?.score_min ?? 0); score <= (state.summary?.score_max ?? 9); score += 1) {
     const button = document.createElement("button");
     button.dataset.score = String(score);
+    button.classList.toggle("selected", image?.score_status === "scored" && image.score === score);
     button.textContent = String(score);
     button.title = `Score ${score}`;
     button.addEventListener("click", () => scoreCurrent(score));
@@ -1051,6 +1053,7 @@ function buildTagButtons() {
     const button = document.createElement("button");
     button.className = "tag";
     button.dataset.tag = tag.value;
+    button.classList.toggle("selected", state.selectedTags.has(tag.value));
     button.textContent = tag.label;
     if (tag.shortcut) {
       button.title = `${tag.label} (shortcut: ${tag.shortcut})`;
