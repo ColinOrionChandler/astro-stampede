@@ -197,9 +197,13 @@ def test_configured_scale_and_comparison_scoring_rejection(config):
         assert conn.execute('SELECT COUNT(*) FROM labels.image_scores').fetchone()[0] == 0
 
 
-def test_legacy_cli_requires_explicit_destinations():
-    with pytest.raises(SystemExit, match='explicit'):
-        cli.main(['legacy'])
+def test_legacy_cli_defaults_destinations(tmp_path, monkeypatch):
+    captured = []
+    monkeypatch.setattr(review, 'serve', lambda config, **kwargs: captured.append(config))
+    cli.main(['legacy', '--root', str(tmp_path)])
+    assert captured[0].db_path == tmp_path / 'state' / 'labels.sqlite'
+    assert captured[0].classification_parquet_path == tmp_path / 'state' / 'classifications.parquet'
+    assert captured[0].export_dir == tmp_path / 'state' / 'exports'
 
 
 def test_label_store_cannot_be_used_as_index(config):

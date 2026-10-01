@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import time
 import sys
+import sqlite3
 from . import review, defaults
 
 
@@ -103,14 +104,13 @@ def make_config(args):
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
-    if argv and argv[0] == "legacy":
-        legacy_args = argv[1:]
-        if not any(arg in {"-h", "--help"} for arg in legacy_args):
-            supplied = {arg.split("=", 1)[0] for arg in legacy_args}
-            if not {"--root", "--db", "--classification-parquet", "--export-dir"} <= supplied:
-                raise SystemExit("Legacy layouts require explicit --root, --db, --classification-parquet and --export-dir.")
-        review.main(legacy_args)
-        return
+    from .launcher import dispatch
+    try:
+        public_options = {option for action in parser()._actions for option in action.option_strings}
+        if dispatch(argv, public_options):
+            return
+    except (ValueError, OSError, sqlite3.Error, RuntimeError) as exc:
+        parser().error(str(exc))
     result, args = parse_args(argv)
     try:
         if args.demo:

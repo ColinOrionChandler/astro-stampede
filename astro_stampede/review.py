@@ -3922,6 +3922,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--quiet", action="store_true", help="Suppress HTTP request logs."
     )
+    parser.add_argument("--validate", action="store_true", help="Validate directory inputs without writing classification stores.")
     parser.add_argument("--import-snapshot", action="store_true",
                         help="Explicitly replace labels/events from a newer snapshot.")
     return parser
@@ -4111,6 +4112,16 @@ def main(argv: list[str] | None = None, *, defaults: dict | None = None) -> None
         comparison_root=args.comparison_root,
         import_snapshot=args.import_snapshot,
     )
+    if args.validate:
+        records = (iter_active_asteroids_png_records(config.root, config.queue_objects or (), config.additional_roots)
+                   if active_asteroids else iter_png_records(config.root, config.products, config.classes,
+                                                            config.object_scope, config.image_paths))
+        if not records:
+            raise ValueError("No reviewable PNGs found in the selected directory layout.")
+        if config.comparison_root:
+            load_comparisons(config.root, config.comparison_root)
+        print(f"Directory inputs validated: {len(records)} PNGs; classification state untouched.")
+        return
     serve(
         config,
         host=args.host,
