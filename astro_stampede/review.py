@@ -37,7 +37,7 @@ from astro_stampede.adapters.rcc_names import (
     get_thumbnail_product_identity,
 )
 from astro_stampede.adapters.comparisons import ComparisonCatalog, load_comparisons
-from astro_stampede import manifest
+from astro_stampede import manifest, trails
 
 
 DEFAULT_ROOT = Path(".")
@@ -2944,7 +2944,8 @@ def query_object_images(
     for image in images:
         pair_rows = conn.execute(
             """
-            SELECT paired.image_id, paired.product, paired.relative_path
+            SELECT paired.image_id, paired.product, paired.relative_path,
+                   paired.filename, paired.annotation
             FROM review_images paired
             WHERE paired.object_name = ?
               AND paired.class_name = ?
@@ -3471,6 +3472,7 @@ class ThumbnailReviewHandler(BaseHTTPRequestHandler):
                     )
                     if self.server.comparisons is not None:
                         self.server.comparisons.annotate(images)
+                    trails.annotate(images, legacy=self.config.layout != "manifest")
                     self._send_json(images)
             elif path.startswith("/api/objects/") and path.endswith("/reveal"):
                 object_id = unquote(
@@ -3564,7 +3566,7 @@ class ThumbnailReviewHandler(BaseHTTPRequestHandler):
 
     def _serve_static(self, relative: str) -> None:
         static_root = resources.files("astro_stampede").joinpath("review_static")
-        if relative not in {"app.js", "index.html", "styles.css"}:
+        if relative not in {"app.js", "trails.js", "index.html", "styles.css"}:
             self._send_error_json("static file not found", HTTPStatus.NOT_FOUND)
             return
         target = static_root.joinpath(relative)

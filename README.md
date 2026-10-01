@@ -63,6 +63,27 @@ image while retaining its manifest ID preserves its labels. Changing the namespa
 creates different identities. Keep the manifest IDs alongside exported labels.
 A cache is bound to one dataset and root; use a fresh index after relocating data.
 
+### Expected trail bar
+
+The **Expected trail bar** checkbox under Display toggles a lime-green,
+black-outlined bar at the lower right of each image, matching the RCC batch
+overlay. Its length is the predicted trail length in original PNG pixels; it
+does not indicate the trail direction or an angular sky scale. Zoom and Fit scale
+the bar with the image. Inversion, brightness and contrast leave it green.
+Source PNGs and classifications are unchanged.
+
+For a generic manifest, put `{"expected_trail_pixels": 24}` in that row's
+`metadata` JSON (CSV writers handle the required quoting). Values must be finite,
+nonnegative numbers; null or an omitted key means unavailable. Comparison rows
+need their own value, including during blinking. After editing metadata, select
+**Rescan**. The runtime demo supplies synthetic lengths for both panels.
+
+In RCC compatibility mode, the length is read from the terminal `_NdPix.png`
+filename suffix, including decimal values. No length is inferred from pixel
+scale alone. Missing lengths, lengths below 3 pixels, and bars too large for the
+image are reported in Display and omitted instead of being clipped or enlarged.
+Turn the overlay off when reviewing copies that already have a bar baked in.
+
 Validate without opening classification stores:
 
 ```sh
@@ -117,6 +138,7 @@ this package carries the minimal identity parser needed to read existing product
 ```sh
 pip install '.[dev]'
 pytest
+node --test tests/test_trails.cjs
 python -m build
 python tools/audit_public.py --history \
   --artifact dist/astro_stampede-0.1.0-py3-none-any.whl \

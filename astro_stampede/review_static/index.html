@@ -155,12 +155,18 @@
           <div class="image-stage" id="imageStage">
             <figure class="image-panel">
               <figcaption id="primaryCaption" hidden>Original · scoring this image</figcaption>
-              <img id="mainImage" alt="Review thumbnail" />
+              <div class="image-surface">
+                <img id="mainImage" alt="Review thumbnail" />
+                <canvas id="mainTrailOverlay" class="trail-overlay" role="img" hidden></canvas>
+              </div>
               <p class="image-filename" id="primaryFilename"></p>
             </figure>
             <figure class="image-panel" id="comparisonPanel" hidden>
               <figcaption id="comparisonCaption">Comparison</figcaption>
-              <img id="comparisonImage" alt="Mapped comparison cutout" />
+              <div class="image-surface">
+                <img id="comparisonImage" alt="Mapped comparison cutout" />
+                <canvas id="comparisonTrailOverlay" class="trail-overlay" role="img" hidden></canvas>
+              </div>
               <p class="image-filename" id="comparisonFilename"></p>
               <p id="comparisonStatus" role="status"></p>
             </figure>
@@ -189,6 +195,11 @@
         </section>
         <section>
           <h2>Display</h2>
+          <label class="checkline" title="Green bar shows the expected trail length in image pixels">
+            <input id="trailOverlayInput" type="checkbox" checked />
+            <span>Expected trail bar</span>
+          </label>
+          <p id="trailOverlayStatus" class="trail-status"></p>
           <label>
             <span>Brightness</span>
             <input id="brightnessInput" type="range" min="50" max="180" value="100" />
@@ -210,6 +221,7 @@
       </aside>
     </div>
     <div class="toast" id="toast"></div>
+    <script src="/static/trails.js"></script>
     <script src="/static/app.js"></script>
   </body>
 </html>

@@ -447,6 +447,7 @@ function renderCurrent() {
 
   if (!image) {
     $("mainImage").removeAttribute("src");
+    renderTrailOverlays();
     $("primaryFilename").textContent = "";
     $("metadata").replaceChildren();
     syncReviewControls(null);
@@ -476,6 +477,7 @@ function blinkSource(image) {
 }
 
 function renderComparison(image) {
+  $("comparisonTrailOverlay").hidden = true;
   const comparison = image?.comparison;
   const visible = Boolean(comparison) && !state.blinkEnabled;
   $("comparisonPanel").hidden = !visible;
@@ -500,6 +502,7 @@ function renderComparison(image) {
   $("comparisonStatus").textContent = "";
   img.onload = applyDisplay;
   img.onerror = () => {
+    $("comparisonTrailOverlay").hidden = true;
     if (currentImage()?.comparison?.url !== comparison.url) return;
     stopBlink();
     $("comparisonPanel").hidden = false;
@@ -512,12 +515,26 @@ function renderComparison(image) {
 
 function setImageSrc(src) {
   const img = $("mainImage");
+  $("mainTrailOverlay").hidden = true;
   if (img.src.endsWith(src)) {
     applyDisplay();
     return;
   }
   img.onload = applyDisplay;
+  img.onerror = renderTrailOverlays;
   img.src = src;
+  renderTrailOverlays();
+}
+
+function renderTrailOverlays() {
+  const image = currentImage();
+  const enabled = $("trailOverlayInput").checked;
+  const displayed = displayedTrailImage(image, state.blinkEnabled && state.blinkOn);
+  const primaryStatus = drawTrailBar($("mainTrailOverlay"), $("mainImage"), displayed, enabled);
+  const comparisonStatus = drawTrailBar($("comparisonTrailOverlay"), $("comparisonImage"), image?.comparison,
+    enabled && !$("comparisonPanel").hidden);
+  $("trailOverlayStatus").textContent = !image ? "" : $("comparisonPanel").hidden
+    ? primaryStatus : `Original: ${primaryStatus}. Comparison: ${comparisonStatus}.`;
 }
 
 function applyDisplay() {
@@ -536,10 +553,11 @@ function applyDisplay() {
     if (img.naturalWidth && img.naturalHeight) {
       img.style.width = `${Math.round(img.naturalWidth * scale)}px`;
       img.style.height = `${Math.round(img.naturalHeight * scale)}px`;
-      img.parentElement.style.width = img.style.width;
+      img.closest(".image-panel").style.width = img.style.width;
     }
     img.style.filter = `${invert} ${brightness} ${contrast}`;
   }
+  renderTrailOverlays();
 }
 
 function renderMetadata(image) {
@@ -1123,6 +1141,7 @@ function wireEvents() {
       .catch((error) => toast(error.message));
   });
   $("scaleSelect").addEventListener("change", applyDisplay);
+  $("trailOverlayInput").addEventListener("change", renderTrailOverlays);
   window.addEventListener("resize", applyDisplay);
   $("invertInput").addEventListener("change", applyDisplay);
   $("brightnessInput").addEventListener("input", applyDisplay);

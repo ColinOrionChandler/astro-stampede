@@ -367,8 +367,26 @@ textarea {
   max-width: none;
   max-height: none;
   background: #000;
-  border: 1px solid #3a4248;
+  display: block;
 }
+
+.image-surface {
+  position: relative;
+  width: fit-content;
+  outline: 1px solid #3a4248;
+}
+
+.trail-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  image-rendering: pixelated;
+}
+
+.trail-overlay[hidden] { display: none; }
+.trail-status { margin: 0; color: var(--muted); font-size: 12px; }
 
 .inspector section {
   display: grid;

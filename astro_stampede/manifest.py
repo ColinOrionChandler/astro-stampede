@@ -6,6 +6,7 @@ import json
 import math
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from .adapters.comparisons import ComparisonCatalog
+from .trails import validate_metadata
 
 REQUIRED = {'image_id', 'object_id', 'relative_path'}
 OPTIONAL = {'order', 'time', 'filter', 'comparison_id', 'role', 'metadata',
@@ -61,6 +62,7 @@ def read(config):
             row['_metadata'] = json.loads(row.get('metadata') or '{}')
             if not isinstance(row['_metadata'], dict):
                 raise ValueError('Metadata must be a JSON object.')
+            validate_metadata(row['_metadata'])
             probabilities = [row.get(k, '') for k in ('model_score_r3', 'model_score_operational')]
             if any(probabilities):
                 if not all(probabilities) or not all(math.isfinite(float(v)) and 0 <= float(v) <= 1 for v in probabilities):
@@ -108,6 +110,7 @@ def comparisons(config):
             key = identity(config.dataset, 'comparison', other['image_id'])
             catalog.paths[key] = other['_path']
             catalog.images[row['relative_path']] = dict(status='available', url=f'/api/comparisons/{key}',
+                expected_trail_pixels=other['_metadata'].get('expected_trail_pixels'),
                 filename=other['_path'].name, band=other.get('filter', ''), visit='', datetime=other.get('time', ''))
     return catalog if catalog.paths else None
 

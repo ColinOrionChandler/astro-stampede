@@ -12,5 +12,9 @@ jobs:
           python-version: '3.11'
       - run: pip install '.[dev]'
       - run: pytest
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --test tests/test_trails.cjs
       - run: python -m build
       - run: python tools/audit_public.py --history --artifact dist/astro_stampede-0.1.0-py3-none-any.whl --artifact dist/astro_stampede-0.1.0.tar.gz

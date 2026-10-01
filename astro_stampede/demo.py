@@ -1,5 +1,6 @@
 """Generate new synthetic pixels and manifests outside distributable assets."""
 import csv
+import json
 import math
 from pathlib import Path
 import random
@@ -28,7 +29,7 @@ def generate(destination):
     root.mkdir(parents=True, exist_ok=False)
     images = root / 'images'; images.mkdir()
     with (root / 'manifest.csv').open('w', newline='') as handle:
-        writer = csv.DictWriter(handle, fieldnames=['image_id', 'object_id', 'relative_path', 'order', 'role', 'comparison_id', 'model_score_r3', 'model_score_operational'])
+        writer = csv.DictWriter(handle, fieldnames=['image_id', 'object_id', 'relative_path', 'order', 'role', 'comparison_id', 'model_score_r3', 'model_score_operational', 'metadata'])
         writer.writeheader()
         for frame in range(6):
             for comparison in (False, True):
@@ -38,4 +39,5 @@ def generate(destination):
                 writer.writerow(dict(image_id=identifier, object_id='Synthetic Object', relative_path='images/' + filename,
                     order=frame, role='comparison' if comparison else 'primary',
                     comparison_id='' if comparison else f'synthetic-{frame}-comparison',
+                    metadata=json.dumps({'expected_trail_pixels': (8 if comparison else 24) + frame * 3}),
                     model_score_r3='' if comparison else .73, model_score_operational='' if comparison else .65))

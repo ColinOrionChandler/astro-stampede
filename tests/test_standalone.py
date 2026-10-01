@@ -8,7 +8,7 @@ from urllib.request import Request, urlopen
 from urllib.error import HTTPError
 
 import pytest
-from astro_stampede import cli, manifest, review
+from astro_stampede import cli, manifest, review, trails
 from astro_stampede.demo import generate, png_bytes
 from tools.audit_public import check
 
@@ -133,8 +133,12 @@ def test_http_assets_comparisons_blind_reveal_and_persistence(config):
         oid = objects[0]['object_id']
         data = request(f'/api/objects/{oid}/images'); images = json.loads(data)
         assert len(images) == 6 and b'model_score_r3' not in data and str(config.root).encode() not in data
+        assert images[0]['expected_trail_pixels'] == 24
+        assert images[0]['comparison']['expected_trail_pixels'] == 8
         assert 'source_path' not in images[0]
         assert request('/api/images/' + images[0]['image_id']).startswith(review.PNG_SIGNATURE)
+        assert request('/api/images/' + images[0]['image_id']) == (config.root / images[0]['relative_path']).read_bytes()
+        assert b'trailBarGeometry' in request('/static/trails.js')
         comparison = images[0]['comparison']
         assert comparison['status'] == 'available'
         assert request(comparison['url']) != request('/api/images/' + images[0]['image_id'])
@@ -146,6 +150,11 @@ def test_http_assets_comparisons_blind_reveal_and_persistence(config):
         assert error.value.code == 403
         assert str(config.root).encode() not in request('/api/export', {})
         request('/api/rescan', {})
+        modify(config, lambda rows: rows[0].update(metadata=json.dumps({'expected_trail_pixels': 32.5})))
+        request('/api/rescan', {})
+        refreshed = json.loads(request(f'/api/objects/{oid}/images'))[0]
+        assert refreshed['expected_trail_pixels'] == 32.5
+        assert refreshed['score'] == 6 and refreshed['image_id'] == images[0]['image_id']
     finally:
         server.shutdown(); server.server_close(); thread.join()
 
@@ -195,3 +204,31 @@ def test_label_store_cannot_be_used_as_index(config):
         with review.connect_review_db(replace(config, index_db_path=config.db_path)):
             pass
     assert not config.db_path.exists()
+
+
+@pytest.mark.parametrize('value', [-1, True, '24', float('nan'), float('inf'), [], {}])
+def test_invalid_trail_length_is_rejected_before_state_changes(config, value):
+    modify(config, lambda rows: rows[0].update(metadata=json.dumps({'expected_trail_pixels': value})))
+    with pytest.raises(ValueError, match='expected_trail_pixels'):
+        review.index_thumbnails(config)
+    assert not config.db_path.exists()
+    assert not config.index_db_path.exists()
+
+
+def test_legacy_trail_lengths_and_comparisons_are_independent():
+    images = [dict(filename='synthetic_235dPix.png', pairs=[dict(relative_path='synthetic_8.5dPix.png')],
+                   comparison=dict(filename='synthetic-comparison.png'))]
+    trails.annotate(images, legacy=True)
+    assert images[0]['expected_trail_pixels'] == 235
+    assert images[0]['pairs'][0]['expected_trail_pixels'] == 8.5
+    assert images[0]['comparison']['expected_trail_pixels'] is None
+    for filename in ['synthetic.png', 'synthetic_-8dPix.png', 'synthetic_5dPix_other.png']:
+        assert trails.annotate([dict(filename=filename)], legacy=True)[0]['expected_trail_pixels'] is None
+
+
+def test_manifest_trail_lengths_are_explicit():
+    images = [dict(filename='synthetic_235dPix.png', annotation='{}'),
+              dict(annotation='{"expected_trail_pixels": 0}'),
+              dict(annotation='{"expected_trail_pixels": 12.5}')]
+    trails.annotate(images)
+    assert [i['expected_trail_pixels'] for i in images] == [None, 0, 12.5]
