@@ -33,7 +33,13 @@ Use **Export** or **Shutdown** to write the portable snapshot before closing a s
 
 ## Your own dataset
 
-Supply `--root`, `--manifest`, `--dataset`, and `--state-dir` as in the command above.
+For a folder containing `manifest.csv`, start with `astro-stampede --root /path/to/images`.
+Omitting `--root` uses the current directory. The default dataset name is the folder
+name, and outputs go in its `state/` subfolder: `labels.sqlite`,
+`classifications.parquet`, `exports/`, and an index named for the dataset and root.
+Override any of these with `--manifest`, `--dataset`, `--state-dir`, or the individual
+storage options. Retain the dataset name when moving or renaming a dataset folder
+to preserve classification identities.
 Inventories and configurations stay outside version control; `local/` is ignored.
 The repository contains no image-name tables, research images, or deployment paths.
 The only manifest example is the runtime demo generator.
@@ -93,6 +99,38 @@ astro-stampede --root local/demo --manifest local/demo/manifest.csv \
 
 ## Local configuration and persistence
 
+Open **Settings** beside the app title to choose the image folder, manifest CSV,
+stable dataset name, and classification output locations. **Browse** navigates
+folders on the computer running the local server. You can also type an absolute
+path or a path beginning with `~`, including a new output folder. Choosing a
+**Classification output folder** is prefilled with the current label database folder; changing it fills in the label database, index, Parquet
+snapshot, and export paths; each can then be adjusted separately.
+
+**Use defaults for this folder** fills in `manifest.csv` and the `state/` output
+paths for the selected image folder, retaining the entered dataset name. It does
+not apply changes until you choose Apply. Selecting a different image folder
+updates a standard manifest path and suggests a separate index while preserving
+existing label and export destinations. Manifest and index paths customized during the edit are kept.
+
+**Save pending work & apply** flushes pending scores, saves the current snapshot,
+validates the inputs and output locations, indexes the selected dataset, and
+reloads the page. Changing the label database opens that store without copying
+or importing previous classifications. If you move the image folder or change
+the dataset name, choose a fresh index file. Other open tabs must reload before
+saving after a settings change.
+
+Settings apply to the running session. After applying, reopen Settings and select
+**Download active configuration** to keep a reusable local JSON configuration:
+
+```sh
+astro-stampede --config /path/to/astro-stampede-settings.json
+```
+
+The download contains local paths; keep it out of version control. Compatibility
+layouts support output-path changes here, while their input selections remain
+managed by their launchers. Configuration download is available for manifest
+sessions. Initial startup still uses the CLI or a saved configuration.
+
 `--config` accepts a local JSON object whose keys correspond to CLI option names
 with underscores. Relative paths in that file resolve relative to the configuration
 file. CLI arguments override configured values. Supported settings include `title`,
@@ -113,7 +151,8 @@ source before using it. A new installation alone never reconciles live data.
 
 CSV exports include stable IDs, relative image paths, labels and provenance.
 JSONL contains audit events; Parquet preserves the durable tables. Automatically
-recorded absolute source paths are omitted from CSV exports and browser responses.
+recorded absolute source paths are omitted from CSV exports and ordinary review
+responses. The local Settings dialog explicitly displays configured paths.
 User-entered comments, tags and metadata are local content and may themselves
 contain private information: review exports before sharing them.
 

@@ -7,17 +7,17 @@ import json
 from pathlib import Path
 import time
 import sys
-from . import review
+from . import review, defaults
 
 
 def parser():
     result = argparse.ArgumentParser(description='Review astronomical PNG sequences locally.')
     result.add_argument('--config', type=Path, help='Local JSON configuration; CLI overrides its values.')
     result.add_argument('--demo', type=Path, help='Generate a synthetic dataset in a new directory and launch it.')
-    result.add_argument('--root', type=Path)
-    result.add_argument('--manifest', type=Path)
-    result.add_argument('--dataset', help='Stable namespace, independent of filesystem location.')
-    result.add_argument('--state-dir', type=Path, help='Local labels, snapshot, index and export directory.')
+    result.add_argument('--root', type=Path, help='Image folder (default: current directory).')
+    result.add_argument('--manifest', type=Path, help='Manifest CSV (default: manifest.csv in the image folder).')
+    result.add_argument('--dataset', help='Stable namespace (default: image folder name); retain it when relocating data.')
+    result.add_argument('--state-dir', type=Path, help='Local output directory (default: state/ in the image folder).')
     result.add_argument('--db', type=Path, help='Existing canonical labels DB; never copied implicitly.')
     result.add_argument('--index-db', type=Path)
     result.add_argument('--classification-parquet', type=Path)
@@ -75,8 +75,11 @@ def parse_args(argv=None):
 
 
 def make_config(args):
-    if not args.root or not args.manifest or not args.dataset or not args.state_dir:
-        raise ValueError('--root, --manifest, --dataset and --state-dir are required.')
+    suggested = defaults.paths(args.root or Path.cwd(), args.dataset, args.state_dir)
+    args.root = Path(suggested['root'])
+    args.manifest = args.manifest or Path(suggested['manifest'])
+    args.dataset = suggested['dataset']
+    args.state_dir = Path(suggested['output'])
     if not 0 <= args.score_min <= args.score_max <= 9:
         raise ValueError('Score scale must be a subset of the keyboard digits 0 through 9.')
     state = args.state_dir.expanduser().resolve()
@@ -84,7 +87,7 @@ def make_config(args):
         root=args.root.expanduser().resolve(), manifest_path=args.manifest.expanduser().resolve(),
         dataset=args.dataset, layout='manifest', products=(args.dataset,), classes=None,
         object_scope=None, object_list_path=None, db_path=(args.db or state / 'labels.sqlite').expanduser().resolve(),
-        index_db_path=(args.index_db or state / ('index-' + review.stable_id(args.dataset)[:16] + '.sqlite')).expanduser().resolve(),
+        index_db_path=(args.index_db or Path(suggested['index_db'])).expanduser().resolve(),
         classification_parquet_path=(args.classification_parquet or state / 'classifications.parquet').expanduser().resolve(),
         export_dir=(args.export_dir or state / 'exports').expanduser().resolve(), reviewer=args.reviewer,
         session_id=f'{args.reviewer}-{time.time_ns()}', title=args.title,

@@ -11,6 +11,7 @@
       <aside class="sidebar">
         <header class="brand">
           <h1 id="brandTitle">Astro Stampede</h1>
+          <button id="settingsBtn" title="Choose input and output paths">Settings</button>
           <button id="rescanBtn" title="Rescan PNG tree">Rescan</button>
         </header>
         <div class="summary" id="summary">Loading index...</div>
@@ -222,6 +223,30 @@
     </div>
     <div class="toast" id="toast"></div>
     <script src="/static/trails.js"></script>
+    <dialog id="settingsDialog" aria-labelledby="settingsTitle">
+      <form id="settingsForm">
+        <h2 id="settingsTitle">Settings</h2>
+        <p>Choose local input folders and where classifications are saved.</p>
+        <p id="settingsCompatibility" hidden>Compatibility inputs are managed by the launcher. Output paths can be changed here.</p>
+        <div id="settingsFields"></div>
+        <p class="settings-hint">Changing the label database opens a separate store. Existing classifications stay in their original database; nothing is copied or imported. Keep the dataset name unchanged when relocating the same images.</p>
+        <p id="settingsStatus" role="status" aria-live="polite"></p>
+        <div class="settings-actions">
+          <button type="button" id="settingsClose">Cancel</button>
+          <button type="button" id="settingsDefaults">Use defaults for this folder</button>
+          <button type="button" id="settingsDownload">Download active configuration</button>
+          <button type="submit" id="settingsApply">Save pending work &amp; apply</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="folderDialog" aria-labelledby="folderTitle">
+      <h2 id="folderTitle">Choose a local path</h2>
+      <form id="folderForm"><label for="folderPath">Folder</label><div class="settings-path"><input id="folderPath" type="text" required /><button>Go</button></div></form>
+      <div class="settings-actions"><button id="folderUp">Up one folder</button><button id="folderSelect">Use this folder</button><button id="folderClose">Cancel</button></div>
+      <p id="folderStatus" role="status"></p>
+      <div id="folderEntries"></div>
+    </dialog>
     <script src="/static/app.js"></script>
+    <script src="/static/settings.js"></script>
   </body>
 </html>

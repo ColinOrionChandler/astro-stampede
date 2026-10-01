@@ -554,3 +554,34 @@ dd {
 /* Generic datasets have no RCC orbital or product presets. */
 body.manifest-layout .rcc-orbital-filter,
 body.manifest-layout .rcc-layout-filter { display: none; }
+
+/* Settings and local filesystem browser */
+dialog {
+  width: min(760px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  padding: 24px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+  color: var(--text);
+}
+dialog::backdrop { background: rgb(0 0 0 / 70%); }
+dialog h2 { margin-top: 0; }
+#settingsFields > label { display: block; margin: 14px 0 6px; }
+.settings-path { display: flex; gap: 8px; }
+.settings-path input {
+  min-width: 0;
+  width: 100%;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+}
+.settings-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
+.settings-hint, #folderStatus { color: var(--muted); font-size: 0.9rem; }
+#settingsStatus { overflow-wrap: anywhere; color: var(--accent-2); }
+#folderEntries { display: grid; gap: 6px; }
+#folderEntries button { text-align: left; overflow-wrap: anywhere; }
+#settingsApply { border-color: var(--accent); }

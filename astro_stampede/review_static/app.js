@@ -1,4 +1,5 @@
 const state = {
+  settingsRevision: null,
   objects: [],
   batches: [],
   currentBatch: null,
@@ -66,7 +67,7 @@ function setSaveStatus(message, stateName = "") {
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "X-Settings-Revision": String(state.settingsRevision ?? 0) },
     ...options,
   });
   const payload = await response.json();
@@ -105,6 +106,7 @@ function queryFromFilters() {
 
 async function loadSummary() {
   state.summary = await api("/api/summary");
+  state.settingsRevision ??= state.summary.settings_revision;
   if (state.summary.tags) tags = state.summary.tags.map(value => ({value, label: value}));
   buildScoreButtons();
   buildTagButtons();
@@ -1154,7 +1156,7 @@ function wireEvents() {
     if (state.playing) startPlayback();
   });
   window.addEventListener("keydown", (event) => {
-    if (event.target.matches("input, textarea, select")) return;
+    if ($("settingsDialog")?.open || event.target.matches("input, textarea, select")) return;
     if (/^[0-9]$/.test(event.key)) {
       event.preventDefault();
       scoreCurrent(Number(event.key)).catch((error) => toast(error.message));

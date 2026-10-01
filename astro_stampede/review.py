@@ -3371,7 +3371,7 @@ class ThumbnailReviewHandler(BaseHTTPRequestHandler):
     def config(self) -> ReviewConfig:
         return self.server.config  # type: ignore[attr-defined]
 
-    def _send_json(self, payload: Any, status: HTTPStatus = HTTPStatus.OK) -> None:
+    def _send_json(self, payload: Any, status: HTTPStatus = HTTPStatus.OK, *, local_settings=False) -> None:
         def public_value(value):
             if isinstance(value, dict):
                 return {k: public_value(v) for k, v in value.items() if k != "source_path"}
@@ -3380,9 +3380,10 @@ class ThumbnailReviewHandler(BaseHTTPRequestHandler):
             if isinstance(value, str) and not value.startswith("/api/") and Path(value).is_absolute():
                 return Path(value).name
             return value
-        data = json.dumps(public_value(payload), sort_keys=True).encode("utf-8")
+        data = json.dumps(payload if local_settings else public_value(payload), sort_keys=True).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
@@ -3401,6 +3402,10 @@ class ThumbnailReviewHandler(BaseHTTPRequestHandler):
         return json.loads(self.rfile.read(length).decode("utf-8"))
 
     def do_GET(self) -> None:  # noqa: N802
+        with self.server.settings_lock:
+            self._get()
+
+    def _get(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
         params = parse_qs(parsed.query)
@@ -3416,7 +3421,7 @@ class ThumbnailReviewHandler(BaseHTTPRequestHandler):
                         self.config.reviewer,
                         self.config.layout,
                     )
-                    summary.update(title=self.config.title, score_min=self.config.score_min,
+                    summary.update(settings_revision=self.server.settings_revision, title=self.config.title, score_min=self.config.score_min,
                                    score_max=self.config.score_max, tags=self.config.tags,
                                    show_metadata=self.config.show_metadata)
                     summary["reveal_available"] = bool(self.config.reveal_scores)
@@ -3497,6 +3502,10 @@ class ThumbnailReviewHandler(BaseHTTPRequestHandler):
             self._send_error_json("Request failed; check local configuration and inputs.", HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def do_POST(self) -> None:  # noqa: N802
+        with self.server.settings_lock:
+            self._post()
+
+    def _post(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
         origin = self.headers.get("Origin")
@@ -3506,9 +3515,28 @@ class ThumbnailReviewHandler(BaseHTTPRequestHandler):
         if self.headers.get("Sec-Fetch-Site") == "cross-site":
             self._send_error_json("Cross-site requests are not allowed.", HTTPStatus.FORBIDDEN)
             return
+        from . import settings
+        revision = self.headers.get("X-Settings-Revision", "0")
+        if revision != str(self.server.settings_revision):
+            self._send_error_json("Settings changed in another tab. Reload before continuing.", HTTPStatus.CONFLICT)
+            return
         try:
             payload = self._read_json()
-            if path == "/api/rescan":
+            if path.startswith("/api/settings"):
+                if urlparse("http://" + self.headers.get("Host", "")).hostname not in {"localhost", "127.0.0.1", "::1"}:
+                    self._send_error_json("Settings require a local connection.", HTTPStatus.FORBIDDEN)
+                    return
+                if path == "/api/settings":
+                    self._send_json(settings.describe(self.config), local_settings=True)
+                elif path == "/api/settings/defaults":
+                    self._send_json(settings.suggestions(payload), local_settings=True)
+                elif path == "/api/settings/browse":
+                    self._send_json(settings.browse(payload), local_settings=True)
+                elif path == "/api/settings/apply":
+                    self._send_json(settings.apply(self.server, payload))
+                else:
+                    self._send_error_json("not found", HTTPStatus.NOT_FOUND)
+            elif path == "/api/rescan":
                 comparisons = (
                     manifest.comparisons(self.config) if self.config.layout == "manifest" else
                     load_comparisons(self.config.root, self.config.comparison_root)
@@ -3561,12 +3589,14 @@ class ThumbnailReviewHandler(BaseHTTPRequestHandler):
                 self._send_json(result)
             else:
                 self._send_error_json("not found", HTTPStatus.NOT_FOUND)
+        except settings.SettingsError as exc:
+            self._send_error_json(str(exc))
         except Exception as exc:
             self._send_error_json("Invalid request or unavailable local input.", HTTPStatus.BAD_REQUEST)
 
     def _serve_static(self, relative: str) -> None:
         static_root = resources.files("astro_stampede").joinpath("review_static")
-        if relative not in {"app.js", "trails.js", "index.html", "styles.css"}:
+        if relative not in {"app.js", "settings.js", "trails.js", "index.html", "styles.css"}:
             self._send_error_json("static file not found", HTTPStatus.NOT_FOUND)
             return
         target = static_root.joinpath(relative)
@@ -3661,6 +3691,8 @@ def build_server(
     )
     server = ReviewServer((host, port), ThumbnailReviewHandler)
     server.config = config
+    server.settings_lock = threading.RLock()
+    server.settings_revision = 0
     server.comparisons = comparisons
     server.quiet = quiet
     server.classification_exported_on_shutdown = False
@@ -3689,8 +3721,8 @@ def serve(
     finally:
         if not server.classification_exported_on_shutdown:
             exported = write_classification_parquet(
-                config.db_path,
-                classification_parquet_path(config),
+                server.config.db_path,
+                classification_parquet_path(server.config),
             )
             if exported.get("written"):
                 print(
