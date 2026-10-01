@@ -58,11 +58,28 @@ def load_comparisons(primary_root: Path, comparison_root: Path) -> ComparisonCat
     required = {"target_key", "png_path"}
     # Manifests are appendable; the latest outcome for each target is authoritative.
     primary = {r["target_key"]: r for r in read_rows(primary_root / "manifest.csv", required)}
-    comparisons = {r["target_key"]: r for r in read_rows(root / "manifest.csv", required)}
+    comparison_rows = read_rows(root / "manifest.csv", {"png_path"})
+    modern = bool(comparison_rows and "comparison_target_key" in comparison_rows[0])
+    key_column = "comparison_target_key" if modern else "target_key"
+    if comparison_rows and key_column not in comparison_rows[0]:
+        raise ValueError("Comparison manifest requires target_key or comparison_target_key.")
+    if modern and "primary_target_key" not in comparison_rows[0]:
+        raise ValueError("Comparison manifest requires primary_target_key.")
+    def comparison_key(row):
+        # Fallback rows may have an empty comparison key; keep their primary
+        # identity so unrelated fallback images can never overwrite each other.
+        return (row["primary_target_key"], row[key_column]) if modern else row[key_column]
+    comparisons = {comparison_key(r): r for r in comparison_rows}
     mappings = read_rows(root / "comparison_mapping.csv", {
         "primary_target_key", "comparison_target_key",
     })
-    targets: dict[str, set[str]] = {}
+    if modern:
+        # New bundles record final fallback outcomes in the mapping table.
+        # The generation manifest can still contain the earlier failed attempt.
+        for row in mappings:
+            if "png_path" in row:
+                comparisons[comparison_key(row)] = row
+    targets: dict[str, set] = {}
     for row in mappings:
         original = primary.get(row["primary_target_key"])
         if not original:
@@ -70,7 +87,8 @@ def load_comparisons(primary_root: Path, comparison_root: Path) -> ComparisonCat
         path = cutout_path(primary_root, original["png_path"])
         if path is not None:
             relative = path.relative_to(primary_root.resolve()).as_posix()
-            targets.setdefault(relative, set()).add(row["comparison_target_key"])
+            key = comparison_key(row) if modern else row["comparison_target_key"]
+            targets.setdefault(relative, set()).add(key)
     for relative, keys in targets.items():
         candidates: dict[str, tuple[Path, dict[str, str]]] = {}
         missing = []
@@ -98,7 +116,7 @@ def load_comparisons(primary_root: Path, comparison_root: Path) -> ComparisonCat
                 "status": "available",
                 "url": f"/api/comparisons/{key}",
                 "filename": path.name,
-                "band": row.get("band", ""),
+                "band": row.get("comparison_band") or row.get("band", ""),
                 "visit": row.get("visit", ""),
                 "datetime": row.get("datetime", ""),
             }
