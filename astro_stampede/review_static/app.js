@@ -397,6 +397,16 @@ function currentImage() {
   return state.images[state.index] || null;
 }
 
+function filenameOnly(value) {
+  return String(value || "").split(/[\\/]/).pop();
+}
+
+function blinkFilename(image) {
+  if (image?.comparison) return image.comparison.filename;
+  const pair = image?.pairs?.[0];
+  return pair?.filename || pair?.relative_path;
+}
+
 function applySavedPayload(image, payload, result = {}) {
   Object.assign(image, {
     score: payload.score,
@@ -437,6 +447,7 @@ function renderCurrent() {
 
   if (!image) {
     $("mainImage").removeAttribute("src");
+    $("primaryFilename").textContent = "";
     $("metadata").replaceChildren();
     syncReviewControls(null);
     renderReveal();
@@ -445,6 +456,9 @@ function renderCurrent() {
   syncBlink(image);
   const primarySrc = `/api/images/${encodeURIComponent(image.image_id)}`;
   setImageSrc(state.blinkEnabled && state.blinkOn ? blinkSource(image) : primarySrc);
+  $("primaryFilename").textContent = filenameOnly(
+    state.blinkEnabled && state.blinkOn ? blinkFilename(image) : image.filename,
+  );
   if (image.comparison) {
     $("primaryCaption").textContent = state.blinkOn
       ? "Comparison · scores apply to original"
@@ -470,6 +484,9 @@ function renderComparison(image) {
   $("primaryCaption").textContent = "Original · scoring this image";
   const img = $("comparisonImage");
   img.hidden = !comparison?.url;
+  $("comparisonFilename").textContent = comparison?.url
+    ? filenameOnly(comparison.filename)
+    : "";
   if (!comparison?.url) {
     img.removeAttribute("src");
     $("comparisonCaption").textContent = "Comparison";
@@ -673,6 +690,9 @@ function syncBlink(image) {
         ? "Comparison · scores apply to original"
         : "Original · scoring this image";
     }
+    $("primaryFilename").textContent = filenameOnly(
+      state.blinkOn ? blinkFilename(image) : image.filename,
+    );
   }, 400);
 }
 
