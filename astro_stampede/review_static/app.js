@@ -11,6 +11,8 @@ const state = {
   direction: 1,
   timer: null,
   blinkTimer: null,
+  blinkEnabled: false,
+  blinkImageId: null,
   blinkOn: false,
   selectedTags: new Set(),
   pendingScoreSaves: new Map(),
@@ -346,7 +348,7 @@ async function fetchObjectImages(objectId) {
 async function applyRevealOnlyFilter() {
   if (!state.selectedObject) return;
   stopPlayback();
-  stopBlink();
+  pauseBlink();
   const objectId = state.selectedObject.object_id;
   const requestToken = state.imageRequestToken + 1;
   state.imageRequestToken = requestToken;
@@ -367,7 +369,7 @@ async function applyRevealOnlyFilter() {
 
 async function selectObject(object) {
   stopPlayback();
-  stopBlink();
+  pauseBlink();
   if (state.selectedObject?.object_id !== object.object_id) resetReveal();
   const requestToken = state.imageRequestToken + 1;
   state.imageRequestToken = requestToken;
@@ -430,7 +432,7 @@ function renderCurrent() {
     ? `${object.product} / ${object.class_name}`
     : "Select an object from the queue to review its PNG cutouts.";
   $("imageCounter").textContent = state.images.length ? `${state.index + 1} / ${state.images.length}` : "0 / 0";
-  $("blinkBtn").disabled = !blinkSource(image);
+  $("blinkBtn").disabled = !state.blinkEnabled && !blinkSource(image);
   renderComparison(image);
 
   if (!image) {
@@ -440,7 +442,14 @@ function renderCurrent() {
     renderReveal();
     return;
   }
-  setImageSrc(`/api/images/${encodeURIComponent(image.image_id)}`);
+  syncBlink(image);
+  const primarySrc = `/api/images/${encodeURIComponent(image.image_id)}`;
+  setImageSrc(state.blinkEnabled && state.blinkOn ? blinkSource(image) : primarySrc);
+  if (image.comparison) {
+    $("primaryCaption").textContent = state.blinkOn
+      ? "Comparison · scores apply to original"
+      : "Original · scoring this image";
+  }
   renderMetadata(image);
   syncReviewControls(image);
   renderReveal();
@@ -454,7 +463,7 @@ function blinkSource(image) {
 
 function renderComparison(image) {
   const comparison = image?.comparison;
-  const visible = Boolean(comparison) && !state.blinkTimer;
+  const visible = Boolean(comparison) && !state.blinkEnabled;
   $("comparisonPanel").hidden = !visible;
   $("imageStage").classList.toggle("comparing", visible);
   $("primaryCaption").hidden = !comparison;
@@ -596,7 +605,6 @@ function move(delta) {
       stopPlayback();
     }
   }
-  stopBlink();
   renderCurrent();
 }
 
@@ -620,37 +628,65 @@ function togglePlayback() {
   state.playing ? stopPlayback() : startPlayback();
 }
 
-function stopBlink() {
+function pauseBlink() {
   if (state.blinkTimer) window.clearInterval(state.blinkTimer);
   state.blinkTimer = null;
+  state.blinkImageId = null;
   state.blinkOn = false;
+}
+
+function stopBlink() {
+  pauseBlink();
+  state.blinkEnabled = false;
   $("blinkBtn").textContent = "Blink pair";
   $("blinkBtn").setAttribute("aria-pressed", "false");
 }
 
-function toggleBlink() {
-  const image = currentImage();
+function syncBlink(image) {
+  const button = $("blinkBtn");
+  button.textContent = state.blinkEnabled
+    ? (image?.comparison ? "Side by side" : "Stop blink")
+    : "Blink pair";
+  button.setAttribute("aria-pressed", String(state.blinkEnabled));
+  if (!state.blinkEnabled) return;
+
   const comparisonSrc = blinkSource(image);
-  if (!comparisonSrc) return;
-  if (state.blinkTimer) {
-    stopBlink();
-    renderCurrent();
+  if (!comparisonSrc) {
+    if (state.blinkTimer) window.clearInterval(state.blinkTimer);
+    state.blinkTimer = null;
+    state.blinkImageId = null;
+    state.blinkOn = false;
     return;
   }
-  stopPlayback();
-  $("blinkBtn").textContent = image.comparison ? "Side by side" : "Stop blink";
-  $("blinkBtn").setAttribute("aria-pressed", "true");
-  $("comparisonPanel").hidden = true;
-  $("imageStage").classList.remove("comparing");
+  if (state.blinkImageId === image.image_id && state.blinkTimer) return;
+
+  if (state.blinkTimer) window.clearInterval(state.blinkTimer);
+  state.blinkOn = false;
+  state.blinkImageId = image.image_id;
+  const primarySrc = `/api/images/${encodeURIComponent(image.image_id)}`;
   state.blinkTimer = window.setInterval(() => {
+    if (currentImage()?.image_id !== image.image_id) return;
     state.blinkOn = !state.blinkOn;
-    setImageSrc(state.blinkOn ? comparisonSrc : `/api/images/${encodeURIComponent(image.image_id)}`);
+    setImageSrc(state.blinkOn ? comparisonSrc : primarySrc);
     if (image.comparison) {
       $("primaryCaption").textContent = state.blinkOn
         ? "Comparison · scores apply to original"
         : "Original · scoring this image";
     }
   }, 400);
+}
+
+function toggleBlink() {
+  const image = currentImage();
+  if (state.blinkEnabled) {
+    stopBlink();
+    renderCurrent();
+    return;
+  }
+  if (!blinkSource(image)) return;
+  stopPlayback();
+  state.blinkEnabled = true;
+  renderCurrent();
 }
 
 async function toggleActive() {
@@ -713,6 +749,8 @@ async function scoreCurrent(score, status = "scored") {
   };
   applySavedPayload(image, payload);
   queueScoreSave(payload);
+  syncReviewControls(image);
+  renderMetadata(image);
   toast(payload.score === null ? payload.status : `Score ${payload.score}`);
   if (!wasReviewed && state.selectedObject) {
     state.selectedObject.scored_count = (state.selectedObject.scored_count || 0) + 1;
