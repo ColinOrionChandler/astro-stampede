@@ -3,16 +3,11 @@
 from __future__ import annotations
 
 import math
-
 import os
-
 import re
-
 from dataclasses import dataclass
-
 from pathlib import Path
-
-from typing import Any, Iterable, Mapping
+from typing import Any
 
 THUMBNAIL_ANNOTATION_SEPARATOR = "__"
 
@@ -23,6 +18,7 @@ THUMBNAIL_IDENTITY_RE = re.compile(
     r"(?P<visit>\d+)_"
     r"(?P<detector>[^_]+)$"
 )
+
 
 @dataclass(frozen=True)
 class ThumbnailProductIdentity:
@@ -36,6 +32,7 @@ class ThumbnailProductIdentity:
     dataset_type: str = ""
     class_name: str = ""
 
+
 def _is_missing(value: Any) -> bool:
     if value is None:
         return True
@@ -48,6 +45,7 @@ def _is_missing(value: Any) -> bool:
     text = str(value).strip()
     return text == "" or text.lower() in {"nan", "none", "<na>", "null"}
 
+
 def _to_float(value: Any) -> float | None:
     if _is_missing(value):
         return None
@@ -58,6 +56,7 @@ def _to_float(value: Any) -> float | None:
     if not math.isfinite(number):
         return None
     return number
+
 
 def sanitize_filename_token(value: Any, *, slash_replacement: str = "-") -> str:
     """Return a conservative filename-safe token for RCC thumbnail components."""
@@ -73,6 +72,7 @@ def sanitize_filename_token(value: Any, *, slash_replacement: str = "-") -> str:
     text = re.sub(r"_+", "_", text)
     text = text.strip("._-")
     return text
+
 
 def canonicalize_comet_fragment_name(value: Any) -> str:
     """Return canonical uppercase spelling for recognized comet fragments.
@@ -142,6 +142,7 @@ def canonicalize_comet_fragment_name(value: Any) -> str:
 
     return text
 
+
 def sanitize_object_token(value: Any, *, slash_replacement: str = "-") -> str:
     """Return an RCC object token with canonical comet-fragment case."""
 
@@ -149,6 +150,7 @@ def sanitize_object_token(value: Any, *, slash_replacement: str = "-") -> str:
         canonicalize_comet_fragment_name(value),
         slash_replacement=slash_replacement,
     )
+
 
 def encode_tisserand_jupiter(value: Any) -> str | None:
     """Encode the Tisserand parameter with respect to Jupiter for annotations."""
@@ -160,6 +162,7 @@ def encode_tisserand_jupiter(value: Any) -> str | None:
     sign = "m" if number < 0 and hundredths != 0 else "p"
     return f"tj_{sign}{hundredths:03d}"
 
+
 def get_thumbnail_extension(filename_or_path: str | os.PathLike[str]) -> str:
     """Return the RCC image extension, preserving compound ``.fits.fz`` suffixes."""
 
@@ -167,6 +170,7 @@ def get_thumbnail_extension(filename_or_path: str | os.PathLike[str]) -> str:
     if name.endswith(".fits.fz"):
         return ".fits.fz"
     return Path(name).suffix
+
 
 def strip_thumbnail_extension(filename_or_path: str | os.PathLike[str]) -> str:
     """Return a thumbnail basename without its RCC image extension."""
@@ -176,11 +180,13 @@ def strip_thumbnail_extension(filename_or_path: str | os.PathLike[str]) -> str:
         return name[:-8]
     return os.path.splitext(name)[0]
 
+
 def get_thumbnail_identity(filename_or_path: str | os.PathLike[str]) -> str:
     """Return the stable identity portion of a thumbnail filename or path."""
 
     stem = strip_thumbnail_extension(filename_or_path)
     return stem.split(THUMBNAIL_ANNOTATION_SEPARATOR, 1)[0]
+
 
 def normalize_detector_key(value: Any) -> str:
     """Return a stable detector-set token such as ``72`` or ``72+75``."""
@@ -198,6 +204,7 @@ def normalize_detector_key(value: Any) -> str:
 
     return "+".join(sorted(dict.fromkeys(pieces), key=sort_key))
 
+
 def thumbnail_product_kind(filename_or_path: str | os.PathLike[str]) -> str:
     """Return the coarse product kind used for duplicate grouping."""
 
@@ -207,6 +214,7 @@ def thumbnail_product_kind(filename_or_path: str | os.PathLike[str]) -> str:
     if ext == ".png":
         return "png"
     return ext.lstrip(".")
+
 
 def parse_thumbnail_identity_fields(
     filename_or_path: str | os.PathLike[str],
@@ -224,6 +232,7 @@ def parse_thumbnail_identity_fields(
     fields = match.groupdict()
     fields["detector"] = normalize_detector_key(fields["detector"])
     return fields
+
 
 def build_thumbnail_product_identity(
     *,
@@ -246,6 +255,7 @@ def build_thumbnail_product_identity(
         dataset_type=sanitize_filename_token(dataset_type),
         class_name=sanitize_filename_token(class_name),
     )
+
 
 def get_thumbnail_product_identity(
     filename_or_path: str | os.PathLike[str],

@@ -19,3 +19,7 @@ local/
 
 # Generated package version; included in built distributions.
 src/astro_stampede/_version.py
+
+.ruff_cache/
+coverage.xml
+.pre-commit-cache/

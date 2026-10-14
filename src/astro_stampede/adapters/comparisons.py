@@ -31,7 +31,7 @@ def cutout_path(root: Path, value: str) -> Path | None:
     parts = Path(value).parts
     if "cutouts" not in parts:
         return None
-    suffix = Path(*parts[parts.index("cutouts"):])
+    suffix = Path(*parts[parts.index("cutouts") :])
     path = (root / suffix).resolve()
     if not path.is_relative_to((root / "cutouts").resolve()) or path.suffix != ".png":
         return None
@@ -46,9 +46,7 @@ class ComparisonCatalog:
 
     def annotate(self, images: list[dict[str, Any]]) -> list[dict[str, Any]]:
         for image in images:
-            image["comparison"] = self.images.get(
-                image["relative_path"], {"status": "No mapped comparison"}
-            )
+            image["comparison"] = self.images.get(image["relative_path"], {"status": "No mapped comparison"})
         return images
 
 
@@ -65,14 +63,20 @@ def load_comparisons(primary_root: Path, comparison_root: Path) -> ComparisonCat
         raise ValueError("Comparison manifest requires target_key or comparison_target_key.")
     if modern and "primary_target_key" not in comparison_rows[0]:
         raise ValueError("Comparison manifest requires primary_target_key.")
+
     def comparison_key(row):
         # Fallback rows may have an empty comparison key; keep their primary
         # identity so unrelated fallback images can never overwrite each other.
         return (row["primary_target_key"], row[key_column]) if modern else row[key_column]
+
     comparisons = {comparison_key(r): r for r in comparison_rows}
-    mappings = read_rows(root / "comparison_mapping.csv", {
-        "primary_target_key", "comparison_target_key",
-    })
+    mappings = read_rows(
+        root / "comparison_mapping.csv",
+        {
+            "primary_target_key",
+            "comparison_target_key",
+        },
+    )
     if modern:
         # New bundles record final fallback outcomes in the mapping table.
         # The generation manifest can still contain the earlier failed attempt.
@@ -97,7 +101,8 @@ def load_comparisons(primary_root: Path, comparison_root: Path) -> ComparisonCat
             path = cutout_path(root, row["png_path"]) if row else None
             if path is None or not path.is_file():
                 missing.append(
-                    "file missing locally" if path is not None
+                    "file missing locally"
+                    if path is not None
                     else (row or {}).get("status") or "not generated locally"
                 )
             else:

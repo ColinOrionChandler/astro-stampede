@@ -40,7 +40,9 @@ def running_server(config):
 
 def main():
     repository = Path(__file__).resolve().parents[1]
-    assert not Path(astro_stampede.__file__).resolve().is_relative_to(repository), "Use a non-editable install"
+    assert not Path(astro_stampede.__file__).resolve().is_relative_to(repository), (
+        "Use a non-editable install"
+    )
     assert astro_stampede.__version__ == version("astro-stampede")
     with TemporaryDirectory(prefix="stampede-smoke-") as directory:
         root = Path(directory) / "synthetic"
