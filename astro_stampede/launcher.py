@@ -1,5 +1,6 @@
 """Select existing directory workflows without requiring a generic manifest."""
 import argparse
+import json
 from pathlib import Path
 
 from . import defaults, review
@@ -19,6 +20,19 @@ def dispatch(argv, public_options):
     options = {arg.split('=', 1)[0] for arg in argv if arg.startswith('--')}
     legacy_options = {option for action in review.build_parser()._actions for option in action.option_strings}
     requested = explicit_legacy or bool(options & (legacy_options - public_options))
+    if '--config' in options:
+        config_probe = argparse.ArgumentParser(add_help=False)
+        config_probe.add_argument('--config', type=Path)
+        config_args, _ = config_probe.parse_known_args(argv)
+        try:
+            data = json.loads(config_args.config.read_text())
+        except (ValueError, OSError):
+            if explicit_legacy:
+                raise
+            return False
+        if isinstance(data, dict) and data.get('layout') in {'rcc', 'active-asteroids'}:
+            review.main(argv)
+            return True
     if not requested and options & {'--config', '--manifest', '--demo', '--help'}:
         return False
     probe = argparse.ArgumentParser(add_help=False, allow_abbrev=False)

@@ -1,6 +1,7 @@
 """Local review engine with explicit compatibility layout adapters."""
 
 from __future__ import annotations
+from . import identities
 
 import argparse
 import csv
@@ -148,6 +149,9 @@ class ReviewConfig:
     tags: tuple[str, ...] | None = None
     show_metadata: bool = True
     import_snapshot: bool = False
+    identity_key: str = "parsed-name"
+    identity_namespace: str | None = None
+    identity_include_class: bool = False
 
 
 @dataclass(frozen=True)
@@ -168,7 +172,7 @@ class ActiveAsteroidsSelection:
 
 
 def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
 
 def stable_id(value: str) -> str:
@@ -176,11 +180,12 @@ def stable_id(value: str) -> str:
 
 
 def object_id_for(product: str, class_name: str, object_name: str) -> str:
-    return stable_id(f"{product}/{class_name}/{object_name}")
+    """Dataset-local object group; class is accepted for API compatibility only."""
+    return identities.object_identity(product, object_name)[0]
 
 
 def image_id_for(product: str, class_name: str, object_name: str, identity: str) -> str:
-    return stable_id(f"{product}/{class_name}/{object_name}/{identity}")
+    return identities.thumbnail(identity if identity.lower().endswith((".png", ".png.gz")) else identity + ".png")[0]
 
 
 def product_image_id_for(
@@ -193,23 +198,7 @@ def product_image_id_for(
 ) -> str:
     """Return a timestamp-independent RCC PNG product identity."""
 
-    identity = get_thumbnail_product_identity(
-        filename,
-        dataset_type=product,
-        class_name=class_name,
-    )
-    if identity is None:
-        return fallback_image_id
-    fields = (
-        product,
-        class_name,
-        object_name,
-        identity.instrument,
-        identity.visit,
-        identity.detector_key,
-        identity.product_kind,
-    )
-    return stable_id("/".join(fields))
+    return identities.thumbnail(filename)[0]
 
 
 def _timestamp_has_fractional_seconds(value: str | None) -> bool:
@@ -348,10 +337,6 @@ def read_active_asteroids_object_list(
             raise ValueError(
                 "Active Asteroids object CSV must contain object_id, object_name, or object."
             )
-        if not fieldnames & {"object_class", "class_name"}:
-            raise ValueError(
-                "Active Asteroids object CSV must contain object_class or class_name."
-            )
         rows = list(reader)
 
     pngs_by_object = discover_active_asteroids_pngs(root, additional_roots)
@@ -371,7 +356,7 @@ def read_active_asteroids_object_list(
             row.get("object_id") or row.get("object_name") or row.get("object") or ""
         ).strip()
         class_name = str(row.get("object_class") or row.get("class_name") or "").strip()
-        if not object_name or not class_name:
+        if not object_name:
             malformed_rows += 1
             continue
         previous_class = requested_classes.get(object_name)
@@ -423,7 +408,7 @@ def read_active_asteroids_object_list(
                 ACTIVE_ASTEROIDS_PRODUCT,
                 class_name,
                 object_name,
-                metadata["identity"],
+                candidate.logical_filename,
             )
             if image_id in selected_paths:
                 duplicate_images += 1
@@ -717,7 +702,7 @@ def read_reveal_scores(
                 product,
                 class_name,
                 object_name,
-                metadata["identity"],
+                filename,
             )
 
         reveal_score = RevealScore(
@@ -831,7 +816,7 @@ def read_image_list_scope(
                         product,
                         class_name,
                         object_name,
-                        metadata["identity"],
+                        candidate.name,
                     )
                     candidates.append(
                         RCCImageCandidate(
@@ -892,7 +877,7 @@ def read_image_list_scope(
                     product,
                     class_name,
                     object_name,
-                    metadata["identity"],
+                    filename,
                 )
             stable_products = products_by_image_id.get(stable_id_value, set())
             if len(stable_products) == 1:
@@ -1226,6 +1211,8 @@ def connect_db(db_path: Path) -> sqlite3.Connection:
 
 
 def initialize_index_db(conn: sqlite3.Connection) -> None:
+    conn.execute("CREATE TABLE IF NOT EXISTS image_sources (image_id TEXT NOT NULL, source_path TEXT NOT NULL, relative_path TEXT NOT NULL, object_id TEXT NOT NULL, filename TEXT NOT NULL, PRIMARY KEY(image_id, source_path))")
+    conn.execute("CREATE TABLE IF NOT EXISTS source_identity_keys (source_id TEXT NOT NULL, canonical_id TEXT NOT NULL, PRIMARY KEY(source_id, canonical_id))")
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS images (
@@ -1354,6 +1341,7 @@ def initialize_label_db(conn: sqlite3.Connection, schema: str = "main") -> None:
             ON review_events(event_time);
         """
     )
+    identities.initialize(conn, schema)
     conn.commit()
 
 
@@ -1416,6 +1404,7 @@ def write_classification_parquet(
     uri = f"file:{source.resolve()}?mode=ro"
     conn = sqlite3.connect(uri, uri=True)
     conn.row_factory = sqlite3.Row
+    conn.execute("BEGIN")
     records: list[dict[str, Any]] = []
     try:
         for row in conn.execute(
@@ -1478,13 +1467,17 @@ def write_classification_parquet(
                     "payload": row["payload"],
                 }
             )
+        for table in ("identity_registry", "identity_aliases", "identity_provenance", "review_metadata"):
+            if table_exists(conn, table):
+                for row in conn.execute(f"SELECT * FROM {table}"):
+                    records.append({"record_type": table, "payload": json.dumps(dict(row), sort_keys=True)})
     finally:
         conn.close()
 
     if not records:
         records.append({"record_type": "snapshot"})
     for record in records:
-        record["snapshot_version"] = 1
+        record["snapshot_version"] = 2
         record["snapshot_exported_at"] = exported_at
 
     frame = pd.DataFrame(records, columns=CLASSIFICATION_SNAPSHOT_COLUMNS)
@@ -1560,7 +1553,7 @@ def import_classification_parquet(
             f"Unsupported classification snapshot; missing columns: {sorted(missing_columns)}"
         )
     versions = {_parquet_value(value) for value in frame["snapshot_version"].unique()}
-    if versions != {1}:
+    if versions not in ({1}, {2}):
         raise ValueError(
             f"Unsupported classification snapshot version(s): {versions!r}"
         )
@@ -1589,7 +1582,23 @@ def import_classification_parquet(
             {key: _parquet_value(value) for key, value in row.items()}
             for row in frame.to_dict(orient="records")
         ]
+        allowed = {"snapshot", "image_score", "object_review", "review_event"}
+        if versions == {2}:
+            allowed.update({"identity_registry", "identity_aliases", "identity_provenance", "review_metadata"})
+        if any(row["record_type"] not in allowed for row in rows):
+            raise ValueError("Unsupported snapshot record type.")
+        # Validate identity metadata before beginning replacement.
+        for row in rows:
+            if row["record_type"] in {"identity_registry", "identity_aliases", "identity_provenance", "review_metadata"}:
+                value = json.loads(row["payload"])
+                expected = {r[1] for r in conn.execute(f"PRAGMA table_info({row['record_type']})")}
+                if not isinstance(value, dict) or set(value) != expected:
+                    raise ValueError("Invalid snapshot identity metadata.")
+                if row["record_type"] == "identity_registry" and hashlib.sha256(value["normalized_key"].encode()).hexdigest() != value["canonical_id"]:
+                    raise ValueError("Invalid canonical identity hash in snapshot.")
         conn.execute("BEGIN IMMEDIATE")
+        for table in ("identity_registry", "identity_aliases", "identity_provenance", "review_metadata"):
+            conn.execute(f"DELETE FROM {table}")
         conn.execute("DELETE FROM image_scores")
         conn.execute("DELETE FROM object_reviews")
         conn.execute("DELETE FROM review_events")
@@ -1650,6 +1659,14 @@ def import_classification_parquet(
                         row["payload"],
                     ),
                 )
+            elif row["record_type"] in {"identity_registry", "identity_aliases", "identity_provenance", "review_metadata"}:
+                value = json.loads(row["payload"])
+                columns = ",".join(value)
+                conn.execute(f"INSERT INTO {row['record_type']} ({columns}) VALUES ({','.join('?' for _ in value)})", tuple(value.values()))
+        if versions == {2}:
+            invalid = conn.execute("SELECT COUNT(*) FROM identity_aliases a LEFT JOIN identity_registry r ON a.entity_kind=r.entity_kind AND a.canonical_id=r.canonical_id WHERE r.canonical_id IS NULL").fetchone()[0]
+            if invalid:
+                raise ValueError("Snapshot contains dangling identity aliases.")
         conn.execute(
             """
             INSERT OR REPLACE INTO review_metadata(key, value)
@@ -1679,12 +1696,12 @@ def reconcile_classification_parquet(
     parquet_path: str | Path,
     incoming_paths: tuple[str | Path, ...] = (),
 ) -> dict[str, Any]:
-    """Merge newer portable snapshots into the local DB, then rewrite one canonical file."""
+    """Import only explicitly selected incoming snapshots, then export the canonical file."""
 
     target_db = Path(db_path).expanduser()
     canonical = Path(parquet_path).expanduser()
     imported: list[dict[str, Any]] = []
-    for candidate in (canonical, *(Path(path).expanduser() for path in incoming_paths)):
+    for candidate in (Path(path).expanduser() for path in incoming_paths):
         if candidate.exists():
             imported.append(import_classification_parquet(target_db, candidate))
     written = write_classification_parquet(target_db, canonical)
@@ -1770,7 +1787,7 @@ def install_image_scope(
     if image_scope:
         conn.executemany(
             "INSERT OR IGNORE INTO review_image_scope(image_id) VALUES (?)",
-            ((image_id,) for image_id in image_scope),
+            ((identities.selected_id(conn, image_id),) for image_id in image_scope),
         )
     conn.execute(
         """
@@ -1821,7 +1838,7 @@ def install_image_scope(
                     ) THEN 0 ELSE 1 END,
                     CASE WHEN EXISTS (
                         SELECT 1
-                        FROM labels.image_scores scored
+                        FROM effective_image_scores scored
                         WHERE scored.image_id = candidate.image_id
                           AND scored.reviewer = (
                               SELECT reviewer
@@ -1869,7 +1886,7 @@ def install_reveal_scope(
     if reveal_scores:
         conn.executemany(
             "INSERT OR IGNORE INTO review_reveal_scope(image_id) VALUES (?)",
-            ((score.image_id,) for score in reveal_scores),
+            ((identities.selected_id(conn, score.image_id),) for score in reveal_scores),
         )
 
 
@@ -1886,63 +1903,12 @@ def split_backup_path(db_path: Path) -> Path:
 
 
 def migrate_label_db_if_needed(db_path: Path) -> dict[str, Any]:
-    """Move a legacy monolithic review DB to a compact label-only DB."""
-
-    db_path = Path(db_path).expanduser()
-    if not db_path.exists():
-        return {"migrated": False, "reason": "missing"}
-
-    with connect_db(db_path) as conn:
-        has_index_tables = table_exists(conn, "images") or table_exists(conn, "objects")
-        has_label_tables = any(
-            table_exists(conn, name)
-            for name in ("image_scores", "object_reviews", "review_events")
-        )
-        if not has_index_tables:
-            initialize_label_db(conn)
-            conn.commit()
-            return {"migrated": False, "reason": "already_split"}
-        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-
-    backup_path = split_backup_path(db_path)
-    if not backup_path.exists():
-        shutil.copy2(db_path, backup_path)
-
-    temp_path = db_path.with_name(f"{db_path.stem}.label_only_tmp{db_path.suffix}")
-    if temp_path.exists():
-        temp_path.unlink()
-    with connect_db(temp_path) as conn:
-        initialize_label_db(conn)
-        conn.execute(f"ATTACH DATABASE {sqlite_quote(str(backup_path))} AS source")
-        if has_label_tables:
-            for table_name in ("image_scores", "object_reviews", "review_events"):
-                if table_exists(conn, table_name, "source"):
-                    conn.execute(
-                        f"INSERT OR IGNORE INTO {table_name} SELECT * FROM source.{table_name}"
-                    )
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO review_metadata(key, value)
-            VALUES
-                ('split_from_backup', ?),
-                ('split_migrated_at', ?)
-            """,
-            (str(backup_path), utc_now()),
-        )
-        conn.commit()
-        conn.execute("DETACH DATABASE source")
-        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-
-    os.replace(temp_path, db_path)
-    for suffix in ("-wal", "-shm"):
-        sidecar = db_path.with_name(db_path.name + suffix)
-        if sidecar.exists():
-            sidecar.unlink()
-    return {"migrated": True, "backup_path": str(backup_path)}
+    """Keep the user's authoritative database at its existing path."""
+    return {"migrated": False, "reason": "preserve_authoritative_store"}
 
 
 @contextmanager
-def connect_review_db(config: ReviewConfig):
+def connect_review_db(config: ReviewConfig, *, image_only: bool = False):
     """Open the split review DB: main=index cache, attached labels=durable labels."""
 
     if config.db_path.resolve() == config.index_db_path.resolve():
@@ -1951,13 +1917,24 @@ def connect_review_db(config: ReviewConfig):
     try:
         initialize_index_db(conn)
         conn.execute("CREATE TABLE IF NOT EXISTS index_metadata (key TEXT PRIMARY KEY, value TEXT)")
-        binding = json.dumps([config.layout, config.dataset, str(config.root.resolve())])
+        binding = json.dumps([config.layout, config.dataset, str(config.root.resolve()), identities.Policy.from_config(config).document()])
         existing = conn.execute("SELECT value FROM index_metadata WHERE key='binding'").fetchone()
+        if not existing and conn.execute("SELECT COUNT(*) FROM images").fetchone()[0]:
+            raise ValueError("Legacy index requires a fresh rebuildable index; use the old index only as compatibility evidence.")
         if existing and existing[0] != binding:
             raise ValueError("Index belongs to a different dataset or root; select a fresh index.")
         conn.execute("INSERT OR IGNORE INTO index_metadata VALUES ('binding', ?)", (binding,))
         conn.commit()
         attach_label_db(conn, config.db_path)
+        identities.require_policy(conn, identities.Policy.from_config(config))
+        if image_only and config.layout != "rcc":
+            # Non-deduplicating image selection never reads scores. Still provide
+            # the table referenced by the shared selection view, without replaying
+            # the entire classification history for every PNG.
+            conn.execute("CREATE TEMP TABLE effective_image_scores AS SELECT * FROM labels.image_scores WHERE 0")
+        else:
+            identities.refresh(conn)
+        conn.commit()
         install_object_scope(conn, config.object_scope)
         install_reveal_scope(conn, config.reveal_scores)
         install_image_scope(
@@ -2004,11 +1981,10 @@ def iter_active_asteroids_png_records(
     queue_objects: tuple[ReviewQueueObject, ...],
     additional_roots: tuple[Path, ...] = (),
 ) -> list[dict[str, Any]]:
-    """Build deduplicated review records from primary and additional AA roots."""
+    """Build source occurrence records from primary and additional AA roots."""
 
     sources_by_object = discover_active_asteroids_pngs(root, additional_roots)
     records: list[dict[str, Any]] = []
-    seen_image_ids: set[str] = set()
     for queue in queue_objects:
         candidates = sorted(
             sources_by_object.get(queue.object_name, ()),
@@ -2038,11 +2014,8 @@ def iter_active_asteroids_png_records(
                 queue.product,
                 queue.class_name,
                 queue.object_name,
-                metadata["identity"],
+                candidate.logical_filename,
             )
-            if image_id in seen_image_ids:
-                continue
-            seen_image_ids.add(image_id)
             records.append(
                 {
                     "image_id": image_id,
@@ -2109,7 +2082,7 @@ def iter_png_records(
         for object_root in object_roots:
             if not object_root.exists() or not object_root.is_dir():
                 continue
-            for path in sorted(object_root.glob("*.png")):
+            for path in sorted(chain(object_root.glob("*.png"), object_root.glob("*.png.gz"))):
                 if not path.is_file():
                     continue
                 try:
@@ -2129,7 +2102,7 @@ def iter_png_records(
                     continue
                 meta = parse_filename_metadata(filename)
                 image_id = image_id_for(
-                    product, class_name, object_name, meta["identity"]
+                    product, class_name, object_name, filename
                 )
                 product_image_id = product_image_id_for(
                     product,
@@ -2196,61 +2169,9 @@ def mark_scan_scope_missing(
     )
 
 
-def migrate_legacy_image_identity(
-    conn: sqlite3.Connection, record: dict[str, Any]
-) -> str | None:
-    """Collapse old full-path image rows into the stable thumbnail identity row."""
-
-    rows = conn.execute(
-        """
-        SELECT image_id, discovered_at
-        FROM images
-        WHERE product = ?
-            AND class_name = ?
-            AND object_name = ?
-            AND identity = ?
-            AND image_id != ?
-        """,
-        (
-            record["product"],
-            record["class_name"],
-            record["object_name"],
-            record["identity"],
-            record["image_id"],
-        ),
-    ).fetchall()
-    relative_conflict = conn.execute(
-        """
-        SELECT image_id, discovered_at
-        FROM images
-        WHERE relative_path = ? AND image_id != ?
-        """,
-        (record["relative_path"], record["image_id"]),
-    ).fetchone()
-    if relative_conflict is not None and all(
-        row["image_id"] != relative_conflict["image_id"] for row in rows
-    ):
-        rows.append(relative_conflict)
-
-    discovered_values = [
-        row["discovered_at"] for row in rows if row["discovered_at"] is not None
-    ]
-    for row in rows:
-        old_image_id = row["image_id"]
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO image_scores (
-                image_id, reviewer, score, status, tags, comment, session_id, scored_at
-            )
-            SELECT ?, reviewer, score, status, tags, comment, session_id, scored_at
-            FROM image_scores
-            WHERE image_id = ?
-            """,
-            (record["image_id"], old_image_id),
-        )
-        conn.execute("DELETE FROM image_scores WHERE image_id = ?", (old_image_id,))
-        conn.execute("DELETE FROM images WHERE image_id = ?", (old_image_id,))
-    return min(discovered_values) if discovered_values else None
+def migrate_legacy_image_identity(conn, record):
+    """Compatibility requires an explicit evidence preflight; never rekey score rows."""
+    return None
 
 
 def summarize_record_duplicates(records: list[dict[str, Any]]) -> dict[str, int]:
@@ -2266,9 +2187,13 @@ def summarize_record_duplicates(records: list[dict[str, Any]]) -> dict[str, int]
     }
 
 
-def index_thumbnails(config: ReviewConfig) -> dict[str, int | float]:
+def index_thumbnails(config: ReviewConfig, *, manifest_rows=None) -> dict[str, int | float]:
     started = time.perf_counter()
-    manifest_records = manifest.records(config) if config.layout == "manifest" else None
+    manifest_records = manifest.records(config, rows=manifest_rows) if config.layout == "manifest" else None
+    if config.identity_key == "manifest-id" and config.layout != "manifest":
+        raise ValueError("manifest-id identity requires a manifest launch.")
+    if config.identity_include_class and config.queue_objects and any(not q.class_name for q in config.queue_objects):
+        raise ValueError("--identity-include-class requires an explicitly supplied object class.")
     with connect_review_db(config) as conn:
         now = utc_now()
         install_review_queue(conn, config.queue_objects)
@@ -2297,7 +2222,10 @@ def index_thumbnails(config: ReviewConfig) -> dict[str, int | float]:
                 config.image_paths,
             )
         )
-        duplicate_summary = summarize_record_duplicates(records)
+        records = list(records)
+        source_count = len(records)
+        records = identities.prepare_records(records, config, conn)
+        duplicate_summary = {"review_products": len(records), "duplicate_groups": conn.execute("SELECT COUNT(*) FROM (SELECT image_id FROM image_sources GROUP BY image_id HAVING COUNT(*)>1)").fetchone()[0], "duplicates_suppressed": source_count - len(records)}
         if config.layout in {"active-asteroids", "manifest"}:
             tisserand_filled = 0
         else:
@@ -2315,6 +2243,10 @@ def index_thumbnails(config: ReviewConfig) -> dict[str, int | float]:
             record.setdefault("product_image_id", record["image_id"])
             legacy_discovered_at = (None if config.layout == "manifest"
                                     else migrate_legacy_image_identity(conn, record))
+            # A changed explicit manifest ID/class may reuse a source path.
+            # Only the rebuildable index row is replaced; historical labels stay put.
+            conn.execute("DELETE FROM main.images WHERE relative_path=? AND image_id!=?",
+                         (record["relative_path"], record["image_id"]))
             existing = conn.execute(
                 "SELECT file_size, mtime, stale FROM images WHERE image_id = ?",
                 (record["image_id"],),
@@ -2390,11 +2322,13 @@ def index_thumbnails(config: ReviewConfig) -> dict[str, int | float]:
                     "stale": stale,
                 },
             )
+        install_image_scope(conn, config.image_scope, reviewer=config.reviewer, deduplicate=False)
+        install_reveal_scope(conn, config.reveal_scores)
         sync_objects(conn)
         conn.commit()
     elapsed_seconds = time.perf_counter() - started
     return {
-        "records": len(records),
+        "records": source_count,
         **duplicate_summary,
         "inserted": inserted,
         "updated": updated,
@@ -2406,6 +2340,7 @@ def index_thumbnails(config: ReviewConfig) -> dict[str, int | float]:
 
 
 def sync_objects(conn: sqlite3.Connection) -> None:
+    identities.refresh(conn)
     now = utc_now()
     conn.execute(
         """
@@ -2418,16 +2353,16 @@ def sync_objects(conn: sqlite3.Connection) -> None:
             i.product,
             i.class_name,
             i.object_name,
-            SUM(CASE WHEN i.missing = 0 THEN 1 ELSE 0 END) AS image_count,
-            SUM(i.missing) AS missing_count,
-            SUM(CASE WHEN i.missing = 0 THEN i.stale ELSE 0 END) AS stale_count,
+            COUNT(DISTINCT CASE WHEN i.missing = 0 THEN i.image_id END) AS image_count,
+            COUNT(DISTINCT CASE WHEN i.missing = 1 THEN i.image_id END) AS missing_count,
+            COUNT(DISTINCT CASE WHEN i.missing = 0 AND i.stale = 1 THEN i.image_id END) AS stale_count,
             COUNT(DISTINCT CASE WHEN i.missing = 0 THEN s.image_id END) AS scored_count,
-            r.active_flag,
-            r.reviewed_at,
+            MAX(r.active_flag),
+            MAX(r.reviewed_at),
             ? AS updated_at
         FROM images i
-        LEFT JOIN image_scores s ON s.image_id = i.image_id
-        LEFT JOIN object_reviews r ON r.object_id = i.object_id
+        LEFT JOIN effective_image_scores s ON s.image_id = i.image_id
+        LEFT JOIN effective_object_reviews r ON r.object_id = i.object_id
         GROUP BY i.object_id
         ON CONFLICT(object_id) DO UPDATE SET
             product = excluded.product,
@@ -2477,7 +2412,7 @@ def query_summary(
     layout: str = "rcc",
 ) -> dict[str, Any]:
     source_image_total = conn.execute(
-        "SELECT COUNT(*) AS n FROM review_eligible_images"
+        "SELECT COUNT(*) AS n FROM image_sources s JOIN review_eligible_images i ON s.image_id=i.image_id"
     ).fetchone()["n"]
     image_total = conn.execute("SELECT COUNT(*) AS n FROM review_images").fetchone()[
         "n"
@@ -2488,7 +2423,7 @@ def query_summary(
     scored_total = conn.execute(
         """
         SELECT COUNT(*) AS n
-        FROM image_scores s
+        FROM effective_image_scores s
         JOIN review_images i ON i.image_id = s.image_id
         WHERE s.reviewer = ?
         """,
@@ -2497,7 +2432,7 @@ def query_summary(
     active_total = conn.execute(
         """
         SELECT COUNT(DISTINCT r.object_id) AS n
-        FROM object_reviews r
+        FROM effective_object_reviews r
         JOIN review_images i ON i.object_id = r.object_id
         WHERE r.reviewer = ? AND r.active_flag = 1
         """,
@@ -2538,7 +2473,7 @@ def query_reveal_review_summary(
         SELECT s.tags, s.comment
         FROM review_reveal_scope reveal
         JOIN review_images i ON i.image_id = reveal.image_id
-        LEFT JOIN image_scores s
+        LEFT JOIN effective_image_scores s
           ON s.image_id = i.image_id
          AND s.reviewer = ?
         """,
@@ -2567,7 +2502,7 @@ def query_batches(conn: sqlite3.Connection, reviewer: str) -> list[dict[str, Any
                 COUNT(s.image_id) AS scored_count
             FROM review_queue_objects q
             LEFT JOIN review_images i ON i.object_id = q.object_id
-            LEFT JOIN image_scores s
+            LEFT JOIN effective_image_scores s
                 ON s.image_id = i.image_id
                AND s.reviewer = ?
             GROUP BY q.batch_number, q.queue_rank, q.object_id
@@ -2720,14 +2655,14 @@ WITH scoped_object_counts AS (
 ),
 reviewer_scores AS (
     SELECT i.object_id, COUNT(*) AS scored_count
-    FROM image_scores s
+    FROM effective_image_scores s
     JOIN review_images i ON i.image_id = s.image_id
     WHERE s.reviewer = ?
     GROUP BY i.object_id
 ),
 reviewer_bad AS (
     SELECT i.object_id, 1 AS has_bad
-    FROM image_scores s
+    FROM effective_image_scores s
     JOIN review_images i ON i.image_id = s.image_id
     WHERE s.reviewer = ? AND s.status = 'bad'
     GROUP BY i.object_id
@@ -2736,7 +2671,7 @@ reviewer_reveal_missing AS (
     SELECT i.object_id, COUNT(*) AS missing_details_count
     FROM review_reveal_scope reveal
     JOIN review_images i ON i.image_id = reveal.image_id
-    LEFT JOIN image_scores s
+    LEFT JOIN effective_image_scores s
       ON s.image_id = i.image_id
      AND s.reviewer = ?
     WHERE review_text_is_blank(s.tags) = 1
@@ -2789,7 +2724,7 @@ object_metrics AS (
 OBJECT_FILTER_JOINS = """
 FROM objects o
 JOIN scoped_object_counts soc ON soc.object_id = o.object_id
-LEFT JOIN object_reviews r ON r.object_id = o.object_id AND r.reviewer = ?
+LEFT JOIN effective_object_reviews r ON r.object_id = o.object_id AND r.reviewer = ?
 LEFT JOIN reviewer_scores rs ON rs.object_id = o.object_id
 LEFT JOIN reviewer_bad rb ON rb.object_id = o.object_id
 LEFT JOIN reviewer_reveal_missing rrm ON rrm.object_id = o.object_id
@@ -2914,7 +2849,7 @@ def query_object_images(
             s.comment AS score_comment,
             s.scored_at
         FROM review_images i
-        LEFT JOIN image_scores s ON s.image_id = i.image_id AND s.reviewer = ?
+        LEFT JOIN effective_image_scores s ON s.image_id = i.image_id AND s.reviewer = ?
         WHERE i.object_id = ?
           AND (
               ? = 0
@@ -2942,6 +2877,9 @@ def query_object_images(
         images = [image for index, image in enumerate(images) if index in included]
     visible_ids = {image["image_id"] for image in images}
     for image in images:
+        conflict = conn.execute("SELECT reason FROM identity_conflicts WHERE entity_kind='image' AND canonical_id=? AND reviewer=?", (image['image_id'], reviewer)).fetchone()
+        image['identity_conflict'] = conflict[0] if conflict else None
+        image['source_occurrences'] = conn.execute("SELECT COUNT(*) FROM image_sources WHERE image_id=?", (image['image_id'],)).fetchone()[0]
         pair_rows = conn.execute(
             """
             SELECT paired.image_id, paired.product, paired.relative_path,
@@ -2987,7 +2925,7 @@ def query_object_reveal(
 ) -> dict[str, Any]:
     """Return rounded reveal scores only for images belonging to one object."""
 
-    scores_by_image = {score.image_id: score for score in reveal_scores}
+    scores_by_image = {identities.selected_id(conn, score.image_id): score for score in reveal_scores}
     rows = conn.execute(
         """
         SELECT image_id
@@ -3004,7 +2942,7 @@ def query_object_reveal(
             continue
         images.append(
             {
-                "image_id": score.image_id,
+                "image_id": row["image_id"],
                 "model_score_r3_percent": _rounded_probability_percent(
                     score.model_score_r3
                 ),
@@ -3049,7 +2987,9 @@ def upsert_object_review(
     config: ReviewConfig,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
-    object_id = str(payload["object_id"])
+    object_id = identities.resolve_id(conn, "object", str(payload["object_id"]))
+    if not conn.execute("SELECT 1 FROM review_images WHERE object_id=?", (object_id,)).fetchone():
+        raise ValueError("Only object groups in this dataset may be reviewed.")
     active_flag = payload.get("active_flag")
     if active_flag is not None:
         active_flag = 1 if bool(active_flag) else 0
@@ -3110,8 +3050,8 @@ def upsert_image_score(
     *,
     sync: bool = True,
 ) -> dict[str, Any]:
-    image_id = str(payload["image_id"])
-    if config.layout == "manifest" and not conn.execute(
+    image_id = identities.selected_id(conn, str(payload["image_id"]))
+    if not conn.execute(
         "SELECT 1 FROM review_images WHERE image_id = ?", (image_id,)
     ).fetchone():
         raise ValueError("Only primary images in this dataset may be scored.")
@@ -3186,16 +3126,16 @@ def clear_image_score(
     config: ReviewConfig,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
-    image_id = str(payload["image_id"])
+    image_id = identities.selected_id(conn, str(payload["image_id"]))
     object_row = conn.execute(
         "SELECT object_id FROM images WHERE image_id = ?",
         (image_id,),
     ).fetchone()
     object_id = object_row["object_id"] if object_row else None
-    conn.execute(
-        "DELETE FROM image_scores WHERE image_id = ? AND reviewer = ?",
-        (image_id, config.reviewer),
-    )
+    if object_row is None:
+        raise ValueError("Only primary images in this dataset may be cleared.")
+    conn.execute("INSERT OR REPLACE INTO image_scores VALUES (?,?,?,?,?,?,?,?)",
+                 (image_id, config.reviewer, None, "cleared", "", "", config.session_id, utc_now()))
     record_event(
         conn,
         config=config,
@@ -3214,6 +3154,7 @@ def undo_last_score(conn: sqlite3.Connection, config: ReviewConfig) -> dict[str,
         SELECT event_id, image_id, object_id
         FROM review_events
         WHERE reviewer = ? AND event_type = 'image_score'
+          AND event_id NOT IN (SELECT json_extract(payload, '$.undone_event_id') FROM review_events WHERE event_type='undo_score' AND json_extract(payload, '$.undone_event_id') IS NOT NULL)
         ORDER BY event_id DESC
         LIMIT 1
         """,
@@ -3221,10 +3162,10 @@ def undo_last_score(conn: sqlite3.Connection, config: ReviewConfig) -> dict[str,
     ).fetchone()
     if row is None or row["image_id"] is None:
         return {"undone": False}
-    conn.execute(
-        "DELETE FROM image_scores WHERE image_id = ? AND reviewer = ?",
-        (row["image_id"], config.reviewer),
-    )
+    row = dict(row)
+    row["image_id"] = identities.resolve_id(conn, "image", row["image_id"])
+    conn.execute("INSERT OR REPLACE INTO image_scores VALUES (?,?,?,?,?,?,?,?)",
+                 (row["image_id"], config.reviewer, None, "cleared", "", "", config.session_id, utc_now()))
     record_event(
         conn,
         config=config,
@@ -3243,10 +3184,11 @@ def export_reviews(config: ReviewConfig) -> dict[str, str]:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     image_csv = export_dir / f"thumbnail_activity_image_labels_{stamp}.csv"
     object_csv = export_dir / f"thumbnail_activity_object_summary_{stamp}.csv"
+    conflicts_csv = export_dir / f"thumbnail_identity_conflicts_{stamp}.csv"
     events_jsonl = export_dir / f"thumbnail_activity_events_{stamp}.jsonl"
     expert_csv = (
         export_dir / f"active_asteroids_expert_scores_{stamp}.csv"
-        if config.layout == "active-asteroids"
+        if config.layout == "active-asteroids" or config.dataset == ACTIVE_ASTEROIDS_PRODUCT
         else None
     )
 
@@ -3263,13 +3205,14 @@ def export_reviews(config: ReviewConfig) -> dict[str, str]:
                 r.active_flag AS object_active_flag, r.status AS object_status,
                 r.tags AS object_tags, r.comment AS object_comment
             FROM images i
-            LEFT JOIN image_scores s ON s.image_id = i.image_id
-            LEFT JOIN object_reviews r ON r.object_id = i.object_id AND r.reviewer = s.reviewer
+            LEFT JOIN effective_image_scores s ON s.image_id = i.image_id
+            LEFT JOIN effective_object_reviews r ON r.object_id = i.object_id AND r.reviewer = s.reviewer
             UNION ALL
             SELECT
                 s.image_id, NULL AS relative_path, NULL AS source_path,
                 NULL AS product, NULL AS class_name,
-                NULL AS object_name, NULL AS filename, NULL AS identity, NULL AS timestamp,
+                NULL AS object_name, (SELECT filename FROM identity_registry WHERE canonical_id=s.image_id AND entity_kind='image') AS filename,
+                (SELECT normalized_key FROM identity_registry WHERE canonical_id=s.image_id AND entity_kind='image') AS identity, NULL AS timestamp,
                 NULL AS instrument, NULL AS visit, NULL AS detector, NULL AS annotation,
                 NULL AS filter_token, NULL AS delta_mag_token, NULL AS q_token,
                 NULL AS tisserand_token, NULL AS width, NULL AS height, NULL AS file_size,
@@ -3277,7 +3220,7 @@ def export_reviews(config: ReviewConfig) -> dict[str, str]:
                 s.reviewer, s.score, s.status, s.tags, s.comment, s.scored_at,
                 NULL AS object_active_flag, NULL AS object_status,
                 NULL AS object_tags, NULL AS object_comment
-            FROM image_scores s
+            FROM effective_image_scores s
             LEFT JOIN images i ON i.image_id = s.image_id
             WHERE i.image_id IS NULL
             ORDER BY product, class_name, object_name, timestamp, visit, detector
@@ -3292,10 +3235,11 @@ def export_reviews(config: ReviewConfig) -> dict[str, str]:
                 r.comment,
                 r.reviewed_at AS reviewer_reviewed_at
             FROM objects o
-            LEFT JOIN object_reviews r ON r.object_id = o.object_id
+            LEFT JOIN effective_object_reviews r ON r.object_id = o.object_id
             ORDER BY o.product, o.class_name, o.object_name
             """
         ).fetchall()
+        conflict_rows = conn.execute("SELECT * FROM identity_conflicts ORDER BY entity_kind, canonical_id, reviewer").fetchall()
         event_rows = conn.execute(
             "SELECT * FROM review_events ORDER BY event_id"
         ).fetchall()
@@ -3303,11 +3247,11 @@ def export_reviews(config: ReviewConfig) -> dict[str, str]:
             conn.execute(
                 """
                 SELECT
-                    i.identity AS thumbnail_basename,
+                    i.filename AS thumbnail_basename,
                     s.score
-                FROM review_queue_objects q
-                JOIN review_images i ON i.object_id = q.object_id
-                JOIN image_scores s
+                FROM review_images i
+                LEFT JOIN review_queue_objects q ON i.object_id = q.object_id
+                JOIN effective_image_scores s
                     ON s.image_id = i.image_id
                    AND s.reviewer = ?
                 WHERE s.status = 'scored'
@@ -3330,6 +3274,7 @@ def export_reviews(config: ReviewConfig) -> dict[str, str]:
 
     write_csv(image_csv, image_rows)
     write_csv(object_csv, object_rows)
+    write_csv(conflicts_csv, conflict_rows)
     if expert_csv is not None:
         with expert_csv.open("w", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(
@@ -3338,7 +3283,7 @@ def export_reviews(config: ReviewConfig) -> dict[str, str]:
             )
             writer.writeheader()
             for row in expert_rows:
-                writer.writerow(row_to_dict(row))
+                writer.writerow({"thumbnail_basename": Path(row["thumbnail_basename"]).stem, "score": row["score"]})
     with events_jsonl.open("w", encoding="utf-8") as handle:
         for row in event_rows:
             handle.write(json.dumps(row_to_dict(row), sort_keys=True) + "\n")
@@ -3351,6 +3296,7 @@ def export_reviews(config: ReviewConfig) -> dict[str, str]:
     exported = {
         "image_labels_csv": str(image_csv),
         "object_summary_csv": str(object_csv),
+        "identity_conflicts_csv": str(conflicts_csv),
         "events_jsonl": str(events_jsonl),
         "classification_parquet": str(classification_snapshot["parquet"]),
     }
@@ -3424,6 +3370,9 @@ class ThumbnailReviewHandler(BaseHTTPRequestHandler):
                     summary.update(settings_revision=self.server.settings_revision, title=self.config.title, score_min=self.config.score_min,
                                    score_max=self.config.score_max, tags=self.config.tags,
                                    show_metadata=self.config.show_metadata)
+                    summary["image_cache_token"] = self._image_cache_token()
+                    summary["identity_policy"] = identities.Policy.from_config(self.config).document()
+                    summary["identity_conflicts"] = [dict(row) for row in conn.execute("SELECT * FROM identity_conflicts WHERE reviewer=?", (self.config.reviewer,))]
                     summary["reveal_available"] = bool(self.config.reveal_scores)
                     summary["comparison_mode"] = self.server.comparisons is not None
                     summary["reveal_images"] = len(self.config.reveal_scores)
@@ -3544,6 +3493,7 @@ class ThumbnailReviewHandler(BaseHTTPRequestHandler):
                 )
                 result = index_thumbnails(self.config)
                 self.server.comparisons = comparisons
+                self.server.image_cache_epoch += 1
                 self._send_json(result)
             elif path == "/api/export":
                 self._send_json(export_reviews(self.config))
@@ -3624,12 +3574,13 @@ class ThumbnailReviewHandler(BaseHTTPRequestHandler):
         data = path.read_bytes()
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "image/png")
+        self._image_cache_headers()
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
 
     def _serve_image(self, image_id: str) -> None:
-        with connect_review_db(self.config) as conn:
+        with connect_review_db(self.config, image_only=True) as conn:
             row = conn.execute(
                 "SELECT relative_path, source_path FROM review_images WHERE image_id = ?",
                 (image_id,),
@@ -3662,9 +3613,20 @@ class ThumbnailReviewHandler(BaseHTTPRequestHandler):
             data = path.read_bytes()
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "image/png")
+        self._image_cache_headers()
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
+
+    def _image_cache_token(self) -> str:
+        return f"{self.server.image_cache_epoch}-{self.server.settings_revision}"
+
+    def _image_cache_headers(self) -> None:
+        # Only versioned URLs can be reused without consulting the server.
+        # A restart, rescan, or settings change gives the UI fresh URLs.
+        version = parse_qs(urlparse(self.path).query).get("v", [None])[0]
+        cacheable = version == self._image_cache_token()
+        self.send_header("Cache-Control", "private, max-age=3600" if cacheable else "no-store")
 
 
 class ReviewServer(ThreadingHTTPServer):
@@ -3681,11 +3643,12 @@ def build_server(
     port: int,
     *,
     quiet: bool = False,
+    manifest_rows=None,
 ) -> ReviewServer:
     if host not in {"127.0.0.1", "localhost", "::1"}:
         raise ValueError("Local review must bind to a loopback host.")
     comparisons = (
-        manifest.comparisons(config) if config.layout == "manifest" else
+        manifest.comparisons(config, rows=manifest_rows) if config.layout == "manifest" else
         load_comparisons(config.root, config.comparison_root)
         if config.comparison_root else None
     )
@@ -3693,6 +3656,7 @@ def build_server(
     server.config = config
     server.settings_lock = threading.RLock()
     server.settings_revision = 0
+    server.image_cache_epoch = time.time_ns()
     server.comparisons = comparisons
     server.quiet = quiet
     server.classification_exported_on_shutdown = False
@@ -3706,10 +3670,11 @@ def serve(
     port: int,
     open_browser: bool,
     quiet: bool = False,
+    manifest_rows=None,
 ) -> None:
     prepare_classification_state(config)
-    summary = index_thumbnails(config)
-    server = build_server(config, host, port, quiet=quiet)
+    summary = index_thumbnails(config, manifest_rows=manifest_rows)
+    server = build_server(config, host, port, quiet=quiet, manifest_rows=manifest_rows)
     url = f"http://{host}:{server.server_address[1]}/"
     print(f"[astro-stampede] Indexed {summary['records']} images; serving {url}", flush=True)
     if open_browser:
@@ -3736,6 +3701,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Launch the local RCC thumbnail activity review interface."
     )
+    parser.add_argument("--config", type=Path, help="Saved directory-launch JSON configuration.")
+    parser.add_argument("--identity-key", choices=("parsed-name", "manifest-id"), default="parsed-name")
+    parser.add_argument("--identity-namespace")
+    parser.add_argument("--identity-include-class", action="store_true")
     parser.add_argument(
         "--comparison-root",
         type=Path,
@@ -3946,8 +3915,62 @@ def _positive_int(value: str, option: str) -> int:
 
 
 def main(argv: list[str] | None = None, *, defaults: dict | None = None) -> None:
+    # The RCC compatibility entry point can also select the shared manifest CLI.
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    probe = argparse.ArgumentParser(add_help=False)
+    probe.add_argument("--manifest")
+    probe.add_argument("--config", type=Path)
+    supplied, _ = probe.parse_known_args(arguments)
+    generic_config = False
+    if supplied.config:
+        document = json.loads(supplied.config.read_text())
+        generic_config = isinstance(document, dict) and bool(document.get("manifest")) and document.get("layout") not in {"rcc", "active-asteroids"}
+    if supplied.manifest or generic_config:
+        from .cli import main as manifest_main, parser as manifest_parser
+        public_options = {flag for action in manifest_parser()._actions for flag in action.option_strings}
+        directory_options = {flag for action in build_parser()._actions for flag in action.option_strings}
+        if {arg.split("=", 1)[0] for arg in arguments if arg.startswith("--")} & (directory_options - public_options):
+            raise ValueError("A manifest launch cannot be combined with directory-only options.")
+        return manifest_main(arguments)
     parser = build_parser()
     parser.set_defaults(**(defaults or {}))
+    preliminary = argparse.ArgumentParser(add_help=False)
+    preliminary.add_argument("--config", type=Path)
+    known, _ = preliminary.parse_known_args(argv)
+    if known.config:
+        data = json.loads(known.config.read_text())
+        if not isinstance(data, dict):
+            parser.error("Configuration must be a JSON object.")
+        actions = {a.dest: a for a in parser._actions
+                   if a.dest not in {"help", "config"} and type(a) is not argparse._StoreConstAction}
+        converted = {}
+        for key, value in data.items():
+            if key not in actions:
+                parser.error(f"Unknown configuration key: {key}")
+            action = actions[key]
+            values = value if isinstance(action, argparse._AppendAction) or action.nargs == "+" else [value]
+            if not isinstance(values, list):
+                parser.error(f"Configuration {key} must be a list.")
+            converted_values = []
+            for item in values:
+                if isinstance(action, argparse._StoreTrueAction):
+                    if type(item) is not bool:
+                        parser.error(f"Configuration {key} must be boolean.")
+                elif action.type is Path:
+                    if not isinstance(item, str) or not item.strip():
+                        parser.error(f"Configuration {key} must be a nonempty path.")
+                    item = Path(item).expanduser()
+                    if not item.is_absolute():
+                        item = known.config.resolve().parent / item
+                elif action.type:
+                    item = action.type(item)
+                elif not isinstance(item, str):
+                    parser.error(f"Configuration {key} must be a string.")
+                if action.choices and item not in action.choices:
+                    parser.error(f"Invalid configuration value for {key}.")
+                converted_values.append(item)
+            converted[key] = converted_values if isinstance(action, argparse._AppendAction) or action.nargs == "+" else converted_values[0]
+        parser.set_defaults(**converted)
     args = parser.parse_args(argv)
     active_asteroids = args.layout == "active-asteroids"
     active_asteroids_db_override = os.environ.get("RCC_ACTIVE_ASTEROIDS_DB")
@@ -4111,7 +4134,13 @@ def main(argv: list[str] | None = None, *, defaults: dict | None = None) -> None
         reveal_auto_detected=reveal_auto_detected,
         comparison_root=args.comparison_root,
         import_snapshot=args.import_snapshot,
+        identity_key=args.identity_key, identity_namespace=args.identity_namespace,
+        identity_include_class=args.identity_include_class,
     )
+    if config.identity_key == "manifest-id":
+        raise ValueError("manifest-id identity requires a manifest launch.")
+    if config.identity_include_class and config.queue_objects and any(not q.class_name for q in config.queue_objects):
+        raise ValueError("--identity-include-class requires an explicitly supplied object class.")
     if args.validate:
         records = (iter_active_asteroids_png_records(config.root, config.queue_objects or (), config.additional_roots)
                    if active_asteroids else iter_png_records(config.root, config.products, config.classes,

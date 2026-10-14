@@ -5,7 +5,7 @@ import json
 import sqlite3
 from tempfile import TemporaryFile
 
-from . import manifest, review, defaults
+from . import manifest, review, defaults, identities
 
 
 class SettingsError(ValueError):
@@ -26,9 +26,27 @@ def describe(config):
         document = dict(values, state_dir=str(config.db_path.parent), reviewer=config.reviewer,
                         title=config.title, score_min=config.score_min, score_max=config.score_max,
                         hide_metadata=not config.show_metadata)
+        document.update(identity_key=config.identity_key, identity_include_class=config.identity_include_class)
+        if config.identity_namespace is not None:
+            document['identity_namespace'] = config.identity_namespace
         if config.tags is not None:
             document['tags'] = list(config.tags)
-    return {'output': str(config.db_path.parent), 'values': values, 'source_editable': config.layout == 'manifest', 'document': document}
+    else:
+        document = {key: value for key, value in values.items() if key not in {'dataset', 'manifest'}}
+        document.update(layout=config.layout, products=list(config.products), reviewer=config.reviewer,
+                        identity_key=config.identity_key, identity_include_class=config.identity_include_class,
+                        batch_size=config.batch_size, image_context=config.image_context)
+        if config.identity_namespace is not None:
+            document['identity_namespace'] = config.identity_namespace
+        if config.classes:
+            document['classes'] = list(config.classes)
+        for key, attr in [('object_list', 'object_list_path'), ('image_list', 'image_list_path'),
+                          ('reveal_list', 'reveal_list_path'), ('comparison_root', 'comparison_root')]:
+            if getattr(config, attr):
+                document[key] = str(getattr(config, attr))
+        if config.additional_roots:
+            document['additional_roots'] = [str(path) for path in config.additional_roots]
+    return {'identity_policy': identities.Policy.from_config(config).document(), 'output': str(config.db_path.parent), 'values': values, 'source_editable': config.layout == 'manifest', 'document': document}
 
 
 def suggestions(payload):
@@ -99,7 +117,7 @@ def candidate(config, payload):
     if new.index_db_path.exists():
         with sqlite3.connect(f'{new.index_db_path.as_uri()}?mode=ro', uri=True) as conn:
             row = conn.execute("SELECT value FROM index_metadata WHERE key='binding'").fetchone()
-            binding = json.dumps([new.layout, new.dataset, str(new.root)])
+            binding = json.dumps([new.layout, new.dataset, str(new.root), identities.Policy.from_config(new).document()])
             if not row or row[0] != binding:
                 raise SettingsError('This index belongs to another dataset or folder. Choose a new index filename.')
     return new

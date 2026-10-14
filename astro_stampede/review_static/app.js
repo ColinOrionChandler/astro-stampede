@@ -30,6 +30,60 @@ const state = {
 };
 
 const SAVE_FLUSH_INTERVAL_MS = 5000;
+// Retain only a small neighborhood; do not preload a whole dataset into RAM.
+const imagePreloads = new Map();
+let imagePreloadQueue = [];
+let imagePreloadActive = false;
+
+function imageUrl(path) {
+  const token = state.summary?.image_cache_token;
+  return token ? `${path}${path.includes("?") ? "&" : "?"}v=${encodeURIComponent(token)}` : path;
+}
+
+function primaryImageUrl(image) {
+  return imageUrl(`/api/images/${encodeURIComponent(image.image_id)}`);
+}
+
+function preloadNearbyImages() {
+  if (typeof Image === "undefined") return;
+  const urls = [];
+  for (const offset of [0, 1, 2, 3, -1]) {
+    const image = state.images[state.index + offset];
+    if (!image || image.width * image.height > 4_000_000) continue;
+    urls.push(primaryImageUrl(image));
+    const pair = blinkSource(image);
+    if (pair) urls.push(pair);
+  }
+  const wanted = new Set(urls);
+  for (const url of imagePreloads.keys()) {
+    if (!wanted.has(url)) imagePreloads.delete(url);
+  }
+  imagePreloadQueue = [...wanted].filter(url => !imagePreloads.has(url));
+  pumpImagePreloads();
+}
+
+function pumpImagePreloads() {
+  if (imagePreloadActive || !imagePreloadQueue.length) return;
+  const url = imagePreloadQueue.shift();
+  const img = new Image();
+  imagePreloadActive = true;
+  imagePreloads.set(url, img);
+  img.fetchPriority = "low";
+  img.decoding = "async";
+  const finish = () => {
+    imagePreloadActive = false;
+    pumpImagePreloads();
+  };
+  img.onload = () => {
+    if (img.decode) img.decode().catch(() => {}).finally(finish);
+    else finish();
+  };
+  img.onerror = () => {
+    imagePreloads.delete(url);
+    finish();
+  };
+  img.src = url;
+}
 let tags = [
   { value: "trail", label: "trail" },
   { value: "field guide", label: "field guide", shortcut: "f" },
@@ -163,6 +217,9 @@ function renderSummary() {
       `${summary.reveal_matched_images.toLocaleString()} reveal-scored`,
       `${summary.reveal_without_notes_or_tags.toLocaleString()} without note/features`,
     );
+  }
+  if (summary.identity_conflicts?.length) {
+    lines.push(`${summary.identity_conflicts.length} identity conflicts require review`);
   }
   lines.push(`Reviewer: ${summary.reviewer}`);
   $("summary").innerHTML = [
@@ -457,7 +514,7 @@ function renderCurrent() {
     return;
   }
   syncBlink(image);
-  const primarySrc = `/api/images/${encodeURIComponent(image.image_id)}`;
+  const primarySrc = primaryImageUrl(image);
   setImageSrc(state.blinkEnabled && state.blinkOn ? blinkSource(image) : primarySrc);
   $("primaryFilename").textContent = filenameOnly(
     state.blinkEnabled && state.blinkOn ? blinkFilename(image) : image.filename,
@@ -470,12 +527,13 @@ function renderCurrent() {
   renderMetadata(image);
   syncReviewControls(image);
   renderReveal();
+  preloadNearbyImages();
 }
 
 function blinkSource(image) {
-  if (image?.comparison) return image.comparison.url || null;
+  if (image?.comparison) return image.comparison.url ? imageUrl(image.comparison.url) : null;
   const pair = image?.pairs?.[0];
-  return pair ? `/api/images/${encodeURIComponent(pair.image_id)}` : null;
+  return pair ? primaryImageUrl(pair) : null;
 }
 
 function renderComparison(image) {
@@ -510,9 +568,10 @@ function renderComparison(image) {
     $("comparisonPanel").hidden = false;
     $("comparisonStatus").textContent = "Comparison image could not be loaded. Rescan to refresh.";
     $("blinkBtn").disabled = true;
-    setImageSrc(`/api/images/${encodeURIComponent(image.image_id)}`);
+    setImageSrc(primaryImageUrl(image));
   };
-  if (!img.src.endsWith(comparison.url)) img.src = comparison.url;
+  const comparisonSrc = imageUrl(comparison.url);
+  if (!img.src.endsWith(comparisonSrc)) img.src = comparisonSrc;
 }
 
 function setImageSrc(src) {
@@ -601,6 +660,7 @@ function parseTags(value) {
 }
 
 function scoreLabel(image) {
+  if (image?.identity_conflict) return "Identity conflict: review and save a new classification to resolve";
   if (!image || !image.score_status) return "Unscored";
   if (image.score_status === "scored") return `Saved score: ${image.score}`;
   if (image.score_status === "bad") return "Marked bad/artifact";
@@ -700,7 +760,7 @@ function syncBlink(image) {
   if (state.blinkTimer) window.clearInterval(state.blinkTimer);
   state.blinkOn = false;
   state.blinkImageId = image.image_id;
-  const primarySrc = `/api/images/${encodeURIComponent(image.image_id)}`;
+  const primarySrc = primaryImageUrl(image);
   state.blinkTimer = window.setInterval(() => {
     if (currentImage()?.image_id !== image.image_id) return;
     state.blinkOn = !state.blinkOn;

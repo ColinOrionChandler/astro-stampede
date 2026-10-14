@@ -185,7 +185,8 @@ def get_thumbnail_identity(filename_or_path: str | os.PathLike[str]) -> str:
 def normalize_detector_key(value: Any) -> str:
     """Return a stable detector-set token such as ``72`` or ``72+75``."""
 
-    text = sanitize_filename_token(value)
+    text = re.sub(r"[,;\s]+", "+", str(value).strip()) if value is not None else ""
+    text = sanitize_filename_token(text)
     if not text:
         return ""
     pieces = [piece for piece in re.split(r"[+,;\s]+", text) if piece]

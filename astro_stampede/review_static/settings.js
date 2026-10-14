@@ -61,7 +61,8 @@ async function openSettings() {
   suggestedManifest = `${activeSettings.values.root.replace(/\/$/, '')}/manifest.csv`;
   suggestedIndex = activeSettings.values.index_db;
   $('settingsFields').replaceChildren();
-  $('settingsStatus').textContent = '';
+  const policy = activeSettings.identity_policy;
+  $('settingsStatus').textContent = policy ? `Identity v${policy.version}: ${policy.key}; namespace: ${policy.namespace || '(none)'}; class: ${policy.include_class ? 'included' : 'excluded'}. Policy changes require a compatibility preflight.` : '';
   $('settingsCompatibility').hidden = activeSettings.source_editable;
   $('settingsDownload').hidden = !activeSettings.document;
   $('settingsDefaults').hidden = !activeSettings.source_editable;

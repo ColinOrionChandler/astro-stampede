@@ -8,7 +8,7 @@ from urllib.request import Request, urlopen
 from urllib.error import HTTPError
 
 import pytest
-from astro_stampede import cli, manifest, review, trails
+from astro_stampede import cli, manifest, review, trails, identities
 from astro_stampede.demo import generate, png_bytes
 from tools.audit_public import check
 
@@ -55,18 +55,19 @@ def test_persistence_restart_undo_and_export(config):
         assert conn.execute('SELECT image_id FROM labels.image_scores').fetchone()[0] == iid
         assert conn.execute('SELECT COUNT(*) FROM labels.review_events').fetchone()[0] == 1
         review.undo_last_score(conn, fresh); conn.commit()
-        assert conn.execute('SELECT COUNT(*) FROM labels.image_scores').fetchone()[0] == 0
+        assert conn.execute('SELECT COUNT(*) FROM effective_image_scores').fetchone()[0] == 0
+        assert conn.execute("SELECT status FROM labels.image_scores").fetchone()[0] == 'cleared'
     assert all(hashlib.sha256(p.read_bytes()).digest() == digest for p, digest in hashes.items())
 
 
 def test_dataset_namespaces_and_stable_ids(config):
     original = manifest.records(config)
     other = manifest.records(replace(config, dataset='another-universe'))
-    assert {r['image_id'] for r in original}.isdisjoint(r['image_id'] for r in other)
+    assert {r['image_id'] for r in original} == {r['image_id'] for r in other}
     assert {r['object_id'] for r in original}.isdisjoint(r['object_id'] for r in other)
     row = original[0]; path = config.root / row['relative_path']; new = path.with_name('renamed.png'); path.rename(new)
     modify(config, lambda rows: rows[0].update(relative_path=new.relative_to(config.root).as_posix()))
-    assert manifest.records(config)[0]['image_id'] == row['image_id']
+    assert manifest.records(config)[0]['image_id'] != row['image_id']
 
 
 @pytest.mark.parametrize('change', ['duplicate', 'parent', 'absolute', 'missing', 'comparison', 'role', 'probability', 'nan'])
@@ -103,7 +104,7 @@ def test_rcc_identity_compatibility():
     first = 'Synthetic_2088-01-01T00-00-00_Camera_9001_4+3.png'
     second = 'Synthetic_2088-01-02T00-00-00.123_Camera_9001_3+4__r.png'
     args = ('synthetic-product', 'synthetic-class', 'Synthetic')
-    expected = review.stable_id('/'.join((*args, 'Camera', '9001', '3+4', 'png')))
+    expected = identities.thumbnail(first)[0]
     assert review.product_image_id_for(*args, first, fallback_image_id='unused') == expected
     assert review.product_image_id_for(*args, second, fallback_image_id='unused') == expected
 
@@ -178,7 +179,7 @@ def test_active_asteroids_identity_and_compressed_duplicate(tmp_path):
     (extra / (name + '.gz')).write_bytes(gzip.compress(png_bytes()))
     queue = review.ReviewQueueObject('active_asteroids', 'synthetic-class', 'SyntheticAA', 1, 1)
     records = review.iter_active_asteroids_png_records(root, (queue,), (extra,))
-    assert len(records) == 1
+    assert len(records) == 2
     expected = review.image_id_for(queue.product, queue.class_name, queue.object_name, name[:-4])
     assert records[0]['image_id'] == expected
     assert records[0]['product_image_id'] == expected

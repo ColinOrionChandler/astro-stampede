@@ -31,6 +31,23 @@ not shared hosted sessions. Source images are read only. Labels are saved to
 SQLite; pending browser changes flush periodically and before navigation/export.
 Use **Export** or **Shutdown** to write the portable snapshot before closing a session.
 
+### Image loading performance
+
+The browser preloads the current image, the next three images, the previous image,
+and their comparison frames, with one background request at a time. It retains
+at most ten preload images; primary frames larger than four megapixels are skipped.
+Versioned PNG URLs allow browser caching for one hour. Restarting the server,
+rescanning, or changing settings changes those URLs, so use **Rescan** after
+replacing source pixels. Source PNGs are never rewritten or copied into a second
+classification dataset.
+
+Manifest and Active Asteroids image requests skip rebuilding effective scores;
+score-dependent RCC representative selection retains its existing lookup.
+Object lists, classification saves, and first uncached reads can still take time.
+For sluggish systems, check Activity Monitor's memory pressure and available space
+on the startup disk as well as activity on the image drive. Raising CPU scheduling
+priority does not reserve RAM or eliminate storage latency.
+
 ## Directory and comparison bundles
 
 The existing directory workflow does **not** require a generic review manifest.
@@ -84,11 +101,79 @@ Images are ordered by `order`, then time and ID; row order is the default.
 No filename or date proximity matching occurs. Unreferenced comparison rows are
 not displayed.
 
-Choose a stable dataset namespace. Stored IDs are SHA-256 hashes of a JSON tuple
-containing the namespace, entity kind, and manifest ID. Moving or renaming an
-image while retaining its manifest ID preserves its labels. Changing the namespace
-creates different identities. Keep the manifest IDs alongside exported labels.
-A cache is bound to one dataset and root; use a fresh index after relocating data.
+### Thumbnail identity
+
+Classification identity defaults to the **parsed thumbnail name** in every
+launcher and layout. A versioned, unambiguous JSON key is hashed with SHA-256.
+Class, dataset, product directory, object group and filesystem location are
+metadata; moving a thumbnail or changing those fields preserves its score in the
+same database. Object groups remain local to each dataset and omit class.
+
+The name itself selects supported AA, RCC and Ponder/coadd parsing rules.
+Recognized annotations are removed; RCC timestamps and detector ordering do not
+split equivalent observation products. Observation, detector and coadd distinctions
+remain meaningful. `.png.gz` is equivalent to `.png`. Unrecognized names retain
+their logical basename and case, including unrecognized annotation-like tokens.
+Renaming an observation can therefore change its identity.
+
+Explicit alternatives, also accepted in saved JSON configuration:
+
+- `--identity-key parsed-name|manifest-id` (default `parsed-name`). Manifest IDs
+  otherwise identify rows and comparison references only. `manifest-id` requires
+  a manifest launch and preserves identity across filename changes.
+- `--identity-namespace VALUE` deliberately separates classifications.
+- `--identity-include-class` deliberately includes class, requiring an explicit
+  `object_class` on each primary manifest row or a class in the directory input.
+  Class is optional in AA object lists when this override is absent.
+
+The selected policy is stored in SQLite and shown in Settings. Downloaded
+settings retain the policy; both generic and directory configurations can be
+reopened with `--config`. A cache is bound to its root, dataset and identity policy;
+use a fresh rebuildable index when changing these. A changed store policy requires
+an explicit compatibility preflight.
+
+### Existing classification stores
+
+Before first use of a legacy store, stop its writers and run a read-only audit
+with explicitly selected sources that contain both old IDs and filenames:
+
+```sh
+python -m astro_stampede.compatibility --db labels.sqlite \
+  --index old-index.sqlite --export rich-labels.csv --report compatibility.json
+```
+
+`--index` and `--export` are repeatable. Legacy generic manifests use
+`--manifest manifest.csv --legacy-dataset original-dataset`. Empty-name export
+rows are ignored; unmapped IDs and contradictory evidence are reported without
+guessing. The report includes raw-table fingerprints, mapping coverage, effective
+classification counts, and unresolved conflicts. Review those results before
+repeating the command with `--apply`. The apply transaction rechecks evidence,
+registers aliases in the **same SQLite database**, and verifies unchanged raw
+score, object-review and audit-event rows. Repeating registration is idempotent.
+Unmapped records remain in the store and snapshots. Contradictory mappings abort
+the transaction. Use additional explicit evidence to reconnect unmapped records.
+
+Effective classifications resolve aliases per thumbnail and reviewer. The latest
+timestamp wins with its complete score, status, tags and comment. Equal timestamps
+use attributable audit-event ordering; otherwise conflicting thumbnails are
+flagged for review while the rest of the queue remains available. A new
+classification resolves a conflict when its timestamp is later. Subsequent writes
+use canonical IDs and append audit events; clears leave a tombstone so older
+aliased scores cannot reappear. Multiple source locations share one deterministic
+display representative and one score. Comparisons remain display-only.
+
+For a deliberate change to an already registered policy, first audit the new
+policy, then apply with `--accept-policy-change`. Existing canonical IDs are
+immutable: changing namespace or adding class creates separate identities and
+does not reassign prior canonical classifications. Legacy alias contradictions
+still require resolution and are never silently overwritten.
+
+Snapshot **version 2** preserves all historical score rows and audit events plus
+the registry, aliases, provenance and policy. Version 1 remains importable via
+`--import-snapshot`; it requires a compatibility preflight before review because
+it contains no filename mappings. Imports remain explicit replacements. Effective
+CSV exports expose canonical IDs and recoverable names; snapshots retain the
+original historical IDs. Exports also include a separate identity-conflict CSV.
 
 ### Expected trail bar
 
@@ -188,11 +273,12 @@ of RCC. It accepts explicit root, label DB, snapshot, and export destinations, w
 The compatibility API also supports Active Asteroids queues and explicit
 Rubin/Ponder comparison manifests. These parsers contain no deployment inventories.
 
-Existing RCC and Active Asteroids IDs are preserved. Their product context,
-class, object and filename identity rules are not replaced with generic manifest
-namespaces. The same canonical SQLite and Parquet locations can be passed through
-the compatibility launcher. RCC remains responsible for filename generation;
-this package carries the minimal identity parser needed to read existing products.
+Existing RCC and Active Asteroids score/event rows are preserved through the
+identity registry and explicit compatibility preflight described above. All
+launchers use the same filename identity policy by default. Pass the canonical
+SQLite, snapshot and export locations together, with a fresh rebuildable index.
+RCC remains responsible for filename generation; this package carries the parser
+needed to recognize its observation products.
 
 ## Development and public-data boundary
 
@@ -230,3 +316,24 @@ from the MIT license conditions.
 For the first STAMPEDE publication, add the verified reference and citation
 instructions here and in `CITATION.cff`, and include the acknowledgement and
 citation request in the publication and release materials.
+
+### Validation diagnostics
+
+Run your usual launcher command with `--validate` to check the manifest and PNG
+inputs without opening or changing classification stores. Omitted paths retain
+the launcher's normal defaults. Validation reports a problem count and one
+specific diagnostic per line, including configuration keys or manifest row and
+field names, for example:
+
+```text
+2 problem(s) found:
+  - Invalid manifest row 2, object_id: ID cannot be empty.
+  - Invalid manifest row 3, order: 'nan': Order must be a finite number.
+```
+
+Independent problems are collected in one pass. Checks that depend on invalid
+input are skipped; unreadable files and unusable manifest headers prevent further
+checks of that manifest. Expected failures exit with code 2. Local terminal
+messages can include configured paths and filesystem reasons; review them before
+sharing. Runtime storage failures are reported when encountered and stop startup;
+`--validate` does not attempt writes to prove that storage is writable.
