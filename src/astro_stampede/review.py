@@ -3210,6 +3210,8 @@ def export_reviews(config: ReviewConfig) -> dict[str, str]:
 
 
 class ThumbnailReviewHandler(BaseHTTPRequestHandler):
+    """Serve local review pages, image resources, and classification API requests."""
+
     server_version = "RCCThumbnailReview/0.1"
 
     def log_message(self, format: str, *args: Any) -> None:
