@@ -1,7 +1,6 @@
-from pathlib import Path
+from importlib.resources import files
 
-
-STATIC_DIR = Path(__file__).parents[1] / "astro_stampede" / "review_static"
+STATIC_DIR = files("astro_stampede").joinpath("review_static")
 
 
 def _function_source(app_source: str, name: str, next_name: str) -> str:
@@ -31,7 +30,7 @@ def test_active_button_toggles_current_reviewer_flag() -> None:
     assert "active_flag: active" in toggle_source
     assert 'status: active ? "active" : "reviewed"' in toggle_source
     assert "state.selectedObject.reviewer_active_flag = active ? 1 : 0" in toggle_source
-    assert 'toggleActive().catch((error) => toast(error.message))' in app_source
+    assert "toggleActive().catch((error) => toast(error.message))" in app_source
     assert 'aria-pressed="false"' in index_source
 
 
@@ -59,7 +58,7 @@ def test_new_artifact_tags_have_labels_and_shortcut_metadata() -> None:
 
     assert "button.dataset.tag = tag.value" in app_source
     assert "button.textContent = tag.label" in app_source
-    assert 'button.title = `${tag.label} (shortcut: ${tag.shortcut})`' in app_source
+    assert "button.title = `${tag.label} (shortcut: ${tag.shortcut})`" in app_source
     assert 'button.setAttribute("aria-keyshortcuts", tag.ariaShortcut || tag.shortcut)' in app_source
 
 
@@ -128,7 +127,7 @@ def test_reveal_fetches_on_demand_and_guards_stale_object_responses() -> None:
     end = app_source.index("async function selectObject(object)", start)
     toggle_source = app_source[start:end]
 
-    assert 'api(`/api/objects/${encodeURIComponent(objectId)}/reveal`)' in toggle_source
+    assert "api(`/api/objects/${encodeURIComponent(objectId)}/reveal`)" in toggle_source
     assert "state.revealRequestToken !== requestToken" in toggle_source
     assert "state.revealObjectId !== objectId" in toggle_source
     assert "state.selectedObject?.object_id !== objectId" in toggle_source
@@ -172,7 +171,7 @@ def test_reveal_only_checkbox_is_hidden_by_default_and_fetches_on_demand() -> No
     assert "Show reveal-scored only" in index_source
     assert 'id="revealOnlyInput" type="checkbox" checked' not in index_source
     assert '$("revealOnlyControl").hidden = !state.summary?.reveal_available' in app_source
-    assert '.checkline[hidden]' in styles_source
+    assert ".checkline[hidden]" in styles_source
     assert '$("revealOnlyInput").checked ? "?reveal_only=1" : ""' in app_source
     assert '$("revealOnlyInput").addEventListener("change"' in app_source
     assert '$("revealOnlyInput").checked =' not in app_source
@@ -213,13 +212,9 @@ def test_missing_reveal_details_filter_controls_the_object_queue() -> None:
     assert 'id="revealMissingDetailsInput" type="checkbox"' in index_source
     assert "Has reveal cutouts missing details" in index_source
     assert 'id="revealMissingDetailsInput" type="checkbox" checked' not in index_source
+    assert ('$("revealMissingDetailsControl").hidden = !state.summary?.reveal_available') in app_source
     assert (
-        '$("revealMissingDetailsControl").hidden = '
-        "!state.summary?.reveal_available"
-    ) in app_source
-    assert (
-        'if ($("revealMissingDetailsInput").checked) '
-        'params.set("reveal_missing_details", "1")'
+        'if ($("revealMissingDetailsInput").checked) params.set("reveal_missing_details", "1")'
     ) in app_source
     assert '"revealMissingDetailsInput"' in app_source
     assert '$("revealMissingDetailsInput").checked =' not in app_source
@@ -231,5 +226,5 @@ def test_reveal_context_checkbox_and_request():
     assert 'id="revealContextControl" hidden' in index_source
     assert 'id="revealContextInput" type="checkbox" />' in index_source
     assert '$("revealContextControl").hidden = !state.summary?.reveal_available' in app_source
-    assert '?reveal_context=1' in app_source
+    assert "?reveal_context=1" in app_source
     assert '$("revealContextInput").addEventListener("change"' in app_source

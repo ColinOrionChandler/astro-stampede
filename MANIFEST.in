@@ -1,2 +1,9 @@
 include VALIDATION.md
 include tools/audit_public.py
+include tools/audit_distributions.py
+include tools/smoke_installed.py
+include tools/check_distributions.py
+include DEVELOPMENT_GUIDE.md CITATION.bib
+recursive-include docs *.md *.rst *.py *.txt
+prune docs/_build
+prune docs/autoapi
