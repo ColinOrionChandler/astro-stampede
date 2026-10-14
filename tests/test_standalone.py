@@ -10,7 +10,9 @@ from urllib.error import HTTPError
 import pytest
 from astro_stampede import cli, manifest, review, trails, identities
 from astro_stampede.demo import generate, png_bytes
-from tools.audit_public import check
+from runpy import run_path
+
+check = run_path(str(Path(__file__).parents[1] / "tools" / "audit_public.py"))["check"]
 
 
 @pytest.fixture

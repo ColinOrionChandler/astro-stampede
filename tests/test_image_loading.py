@@ -5,7 +5,7 @@ import threading
 from urllib.request import urlopen, Request
 
 from astro_stampede import review
-from test_standalone import config
+from .test_standalone import config
 
 
 def test_image_only_selection_preserves_scope_and_skips_score_replay(config, monkeypatch):

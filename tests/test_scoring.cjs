@@ -31,7 +31,7 @@ for (const score of [0, 7]) {
       document: { getElementById: get, createElement: element, body: element() },
       window: { clearTimeout() {} },
     });
-    const source = fs.readFileSync(require.resolve('../astro_stampede/review_static/app.js'), 'utf8');
+    const source = fs.readFileSync(require.resolve('../src/astro_stampede/review_static/app.js'), 'utf8');
     vm.runInContext(source.replace('boot().catch((error) => toast(error.message));', ''), context);
     vm.runInContext(`
       api = async () => ({objects: 1, images: 1, scored: 1, active_objects: 0,
@@ -73,7 +73,7 @@ for (const paired of [false, true]) {
       document: { getElementById: get, createElement: element },
       window: { setInterval(fn) { tick = fn; return 1; }, clearInterval() {} },
     });
-    const source = fs.readFileSync(require.resolve('../astro_stampede/review_static/app.js'), 'utf8');
+    const source = fs.readFileSync(require.resolve('../src/astro_stampede/review_static/app.js'), 'utf8');
     vm.runInContext(source.replace('boot().catch((error) => toast(error.message));', ''), context);
     vm.runInContext(`
       queueScoreSave = (payload) => state.pendingScoreSaves.set(payload.image_id, payload);

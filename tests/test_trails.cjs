@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { trailBarGeometry, displayedTrailImage, drawTrailBar } = require('../astro_stampede/review_static/trails.js');
+const { trailBarGeometry, displayedTrailImage, drawTrailBar } = require('../src/astro_stampede/review_static/trails.js');
 
 test('batch geometry preserves exact source-pixel length and margins', () => {
   for (const pixels of [3, 5, 8.5, 235, 553]) {

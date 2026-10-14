@@ -11,7 +11,7 @@ function setup() {
     window: {addEventListener() {}},
     Image: class {set src(value) {this.url = value; requests.push(this);}},
   });
-  const source = fs.readFileSync(require.resolve('../astro_stampede/review_static/app.js'), 'utf8');
+  const source = fs.readFileSync(require.resolve('../src/astro_stampede/review_static/app.js'), 'utf8');
   vm.runInContext(source.replace('boot().catch((error) => toast(error.message));', ''), context);
   vm.runInContext(`state.summary = {image_cache_token: 'session-0'};
     state.images = Array.from({length: 1000}, (_, i) => ({image_id: String(i), width: 500, height: 500,

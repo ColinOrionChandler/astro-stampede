@@ -1,7 +1,7 @@
-from pathlib import Path
+from importlib.resources import files
 
 
-STATIC_DIR = Path(__file__).parents[1] / "astro_stampede" / "review_static"
+STATIC_DIR = files("astro_stampede").joinpath("review_static")
 
 
 def _function_source(app_source: str, name: str, next_name: str) -> str:

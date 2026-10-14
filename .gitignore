@@ -16,3 +16,6 @@ local/
 *.tsv
 *.png
 *.fits*
+
+# Generated package version; included in built distributions.
+src/astro_stampede/_version.py
