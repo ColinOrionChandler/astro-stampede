@@ -11,12 +11,29 @@ license = "MIT"
 license-files = ["LICENSE"]
 authors = [{name = "Colin Chandler"}]
 requires-python = ">=3.10"
+keywords = ["astronomy", "cutouts", "classification", "image-review"]
+classifiers = [
+  "Intended Audience :: Science/Research",
+  "Topic :: Scientific/Engineering :: Astronomy",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Operating System :: MacOS",
+  "Operating System :: POSIX :: Linux",
+]
 dependencies = ["pandas>=1.5", "pyarrow>=10"]
 
 [project.urls]
 "Source Code" = "https://github.com/ColinOrionChandler/astro-stampede"
+"Documentation" = "https://github.com/ColinOrionChandler/astro-stampede/tree/main/docs"
+"Issues" = "https://github.com/ColinOrionChandler/astro-stampede/issues"
+"Changelog" = "https://github.com/ColinOrionChandler/astro-stampede/blob/main/docs/release-notes.md"
 
 [project.optional-dependencies]
+release = ["build", "twine>=6"]
 dev = ["pytest>=7", "pytest-cov", "build", "pre-commit>=4", "ruff==0.17.0"]
 
 docs = ["sphinx>=8,<9", "sphinx-autoapi>=3.6,<4", "sphinx-rtd-theme>=3,<4", "myst-parser>=4,<5"]

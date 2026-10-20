@@ -56,8 +56,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: python -m pip install build
+      - run: python -m pip install build 'twine>=6'
       - run: python -m build --outdir dist/check
+      - run: python -m twine check --strict dist/check/*
       - run: python tools/audit_distributions.py dist/check --history
       - run: python tools/check_distributions.py dist/check
   documentation:

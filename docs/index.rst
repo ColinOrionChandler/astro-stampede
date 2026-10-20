@@ -28,5 +28,6 @@ is designed for one local review process, not concurrent hosted sessions.
    development
    template
    releases
+   release-notes
    acknowledgements
    autoapi/astro_stampede/index
