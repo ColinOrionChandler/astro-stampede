@@ -19,7 +19,7 @@ import threading
 import time
 import webbrowser
 from contextlib import closing, contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -1837,6 +1837,56 @@ def migrate_label_db_if_needed(db_path: Path) -> dict[str, Any]:
     return {"migrated": False, "reason": "preserve_authoritative_store"}
 
 
+def index_binding(config: ReviewConfig) -> str:
+    """Describe the source and identity policy owned by an index cache."""
+    return json.dumps(
+        [
+            config.layout,
+            config.dataset,
+            str(config.root.resolve()),
+            identities.Policy.from_config(config).document(),
+        ]
+    )
+
+
+def recover_default_index(config: ReviewConfig) -> ReviewConfig:
+    """Select a rebuildable cache without modifying a mismatched database.
+
+    Only startup with an automatically selected index calls this. Keeping the old
+    file also preserves legacy contents and avoids replacing another server's
+    open SQLite database or its WAL files.
+    """
+    if config.index_db_path.resolve() == config.db_path.resolve():
+        raise ValueError("Label and index databases must be separate files.")
+
+    def binding_at(path):
+        with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)) as conn:
+            if not table_exists(conn, "index_metadata"):
+                return None
+            row = conn.execute("SELECT value FROM index_metadata WHERE key='binding'").fetchone()
+            return row[0] if row else None
+
+    path = config.index_db_path
+    expected = index_binding(config)
+    if not path.exists() or binding_at(path) in (None, expected):
+        return config
+    digest = hashlib.sha256(expected.encode()).hexdigest()[:16]
+    counter = 0
+    while True:
+        suffix = f"-{counter}" if counter else ""
+        candidate = path.with_name(f"index-rebuilt-{digest}{suffix}.sqlite")
+        if candidate.resolve() == config.db_path.resolve():
+            raise ValueError("Label and index databases must be separate files.")
+        if not candidate.exists() or binding_at(candidate) == expected:
+            print(
+                "[astro-stampede] Default index belongs to different inputs or identity settings; "
+                "rebuilding the current image cache. Keeping the existing label database and old index.",
+                flush=True,
+            )
+            return replace(config, index_db_path=candidate)
+        counter += 1
+
+
 @contextmanager
 def connect_review_db(config: ReviewConfig, *, image_only: bool = False):
     """Open the split review DB: main=index cache, attached labels=durable labels."""
@@ -1847,14 +1897,7 @@ def connect_review_db(config: ReviewConfig, *, image_only: bool = False):
     try:
         initialize_index_db(conn)
         conn.execute("CREATE TABLE IF NOT EXISTS index_metadata (key TEXT PRIMARY KEY, value TEXT)")
-        binding = json.dumps(
-            [
-                config.layout,
-                config.dataset,
-                str(config.root.resolve()),
-                identities.Policy.from_config(config).document(),
-            ]
-        )
+        binding = index_binding(config)
         existing = conn.execute("SELECT value FROM index_metadata WHERE key='binding'").fetchone()
         if not existing and conn.execute("SELECT COUNT(*) FROM images").fetchone()[0]:
             raise ValueError(
@@ -3621,7 +3664,10 @@ def serve(
     open_browser: bool,
     quiet: bool = False,
     manifest_rows=None,
+    recover_index: bool = False,
 ) -> None:
+    if recover_index:
+        config = recover_default_index(config)
     prepare_classification_state(config)
     summary = index_thumbnails(config, manifest_rows=manifest_rows)
     server = build_server(config, host, port, quiet=quiet, manifest_rows=manifest_rows)
@@ -3860,7 +3906,7 @@ def _positive_int(value: str, option: str) -> int:
     return parsed
 
 
-def main(argv: list[str] | None = None, *, defaults: dict | None = None) -> None:
+def main(argv: list[str] | None = None, *, defaults: dict | None = None, recover_index: bool = False) -> None:
     # The RCC compatibility entry point can also select the shared manifest CLI.
     arguments = list(sys.argv[1:] if argv is None else argv)
     probe = argparse.ArgumentParser(add_help=False)
@@ -4102,6 +4148,7 @@ def main(argv: list[str] | None = None, *, defaults: dict | None = None) -> None
         port=args.port,
         open_browser=not args.no_open,
         quiet=args.quiet,
+        recover_index=recover_index,
     )
 
 

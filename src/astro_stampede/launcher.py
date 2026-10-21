@@ -87,5 +87,5 @@ def dispatch(argv, public_options):
         key: Path(values[key]) for key in ("db", "index_db", "classification_parquet", "export_dir")
     }
     configured["root"] = root
-    review.main(remaining, defaults=configured)
+    review.main(remaining, defaults=configured, recover_index="--index-db" not in options)
     return True

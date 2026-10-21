@@ -41,8 +41,17 @@ use any contiguous subset of the keyboard digits 0–9.
 
 By default, the state directory contains a durable label SQLite database, a
 rebuildable dataset index, a portable classification Parquet, and an export folder.
+At startup, an automatically selected index with mismatched root, dataset, layout,
+or identity settings is rebuilt in a separate cache file. This lets
+`astro-stampede --root .` recover without manual index selection. The old index is
+retained, and later launches reuse the replacement cache. The label database,
+classifications, image points, and audit history stay in place; recovery does not
+import a snapshot or override the label database's identity policy.
+
 `--db`, `--index-db`, `--classification-parquet`, and `--export-dir` can select
 existing local stores explicitly. Label and index paths must differ.
+Explicit index paths, including paths in saved configurations, retain the mismatch
+check. Select a fresh index for those launches or when changing paths in Settings.
 
 **SQLite labels are authoritative by default.** Startup does not import or merge
 snapshots, relocate databases, or split old databases. Only `--import-snapshot`

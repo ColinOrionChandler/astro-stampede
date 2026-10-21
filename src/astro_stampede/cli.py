@@ -223,6 +223,7 @@ def main(argv=None):
             open_browser=not args.no_open,
             quiet=args.quiet,
             manifest_rows=prepared["rows"],
+            recover_index=args.index_db is None,
         )
     except (ValueError, OSError, sqlite3.Error, RuntimeError) as exc:
         if not isinstance(exc, ValidationError):

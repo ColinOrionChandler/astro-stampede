@@ -1,10 +1,14 @@
 """Root-only launches exercise directory workflows without generic manifests."""
 
 import csv
+import json
+import sqlite3
+from contextlib import closing
+from types import SimpleNamespace
 
 import pytest
 
-from astro_stampede import cli, review
+from astro_stampede import cli, points, review
 from astro_stampede.adapters.comparisons import load_comparisons
 from astro_stampede.demo import png_bytes
 
@@ -87,3 +91,63 @@ def test_ambiguous_bundle_parent_requires_selection(tmp_path):
     with pytest.raises(SystemExit):
         cli.main(["--root", str(tmp_path), "--validate"])
     assert not (tmp_path / "state").exists()
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_only_default_index_enables_recovery(tmp_path, monkeypatch, explicit):
+    bundle(tmp_path, nested=True)
+    captured = []
+    monkeypatch.setattr(review, "serve", lambda config, **kwargs: captured.append(kwargs))
+    args = ["--root", str(tmp_path)]
+    if explicit:
+        args += ["--index-db", str(tmp_path / "explicit.sqlite")]
+    cli.main(args)
+    assert captured[0]["recover_index"] is (not explicit)
+
+
+def test_root_dot_rebuilds_nested_bundle_index(tmp_path, monkeypatch):
+    _, root, _ = bundle(tmp_path, nested=True)
+    launched = []
+
+    def build(config, *args, **kwargs):
+        launched.append(config)
+        return SimpleNamespace(
+            config=config,
+            server_address=("127.0.0.1", 0),
+            serve_forever=lambda: None,
+            server_close=lambda: None,
+            classification_exported_on_shutdown=False,
+        )
+
+    monkeypatch.setattr(review, "build_server", build)
+    monkeypatch.chdir(tmp_path)
+    cli.main(["--root", ".", "--no-open"])
+    config = launched[-1]
+    with review.connect_review_db(config) as conn:
+        oid = conn.execute("SELECT object_id FROM images").fetchone()[0]
+        images = review.query_object_images(conn, oid, config.reviewer)
+        points.annotate(conn, config, None, images)
+        target = images[0]["point_target"]
+        points.save(
+            conn,
+            config,
+            None,
+            dict(target_id=target["target_id"], source_revision=target["source_revision"], x=5, y=6),
+        )
+        review.upsert_image_score(conn, config, dict(image_id=images[0]["image_id"], score=8))
+        conn.execute("UPDATE index_metadata SET value=? WHERE key='binding'", (json.dumps(["old-root"]),))
+        conn.commit()
+    with closing(sqlite3.connect(config.db_path)) as conn:
+        before = list(conn.iterdump())
+    cli.main(["--root", ".", "--no-open"])
+    recovered = launched[-1]
+    assert recovered.root == root
+    assert recovered.db_path == config.db_path
+    assert recovered.index_db_path != config.index_db_path
+    with closing(sqlite3.connect(config.db_path)) as conn:
+        assert list(conn.iterdump()) == before
+    with review.connect_review_db(recovered) as conn:
+        images = review.query_object_images(conn, oid, config.reviewer)
+        points.annotate(conn, recovered, None, images)
+        assert images[0]["score"] == 8
+        assert (images[0]["point"]["x"], images[0]["point"]["y"]) == (5, 6)
