@@ -163,7 +163,7 @@ $('settingsForm').onsubmit = async event => {
   $('settingsStatus').textContent = 'Saving pending work and validating paths…';
   try {
     while (state.flushing) await new Promise(resolve => setTimeout(resolve, 50));
-    await flushPendingSaves();
+    await flushAllPendingSaves();
     await settingsPost('/apply', payload);
     window.location.reload();
   } catch (error) {

@@ -26,8 +26,20 @@ const state = {
   revealRequestToken: 0,
   revealLoading: false,
   imageRequestToken: 0,
+  objectLoading: false,
+  loadedObject: null,
   comparisonDefaultsApplied: false,
 };
+
+const pointReview = typeof PointController === "undefined" ? null : new PointController({
+  request: (...args) => api(...args),
+  onDiscard: targets => {
+    // A failed response may have followed a committed write. Reload the server truth.
+    targets.forEach(id => pointReview.values.delete(id));
+    applyRevealOnlyFilter().catch(error => toast(error.message));
+  },
+  isTransitioning: () => state.objectLoading || Boolean(document.querySelector?.('dialog[open]')),
+});
 
 const SAVE_FLUSH_INTERVAL_MS = 5000;
 // Retain only a small neighborhood; do not preload a whole dataset into RAM.
@@ -40,8 +52,14 @@ function imageUrl(path) {
   return token ? `${path}${path.includes("?") ? "&" : "?"}v=${encodeURIComponent(token)}` : path;
 }
 
+function frameImageUrl(path, frame) {
+  const src = imageUrl(path);
+  const revision = frame?.point_target?.source_revision;
+  return revision ? `${src}${src.includes('?') ? '&' : '?'}source_revision=${encodeURIComponent(revision)}` : src;
+}
+
 function primaryImageUrl(image) {
-  return imageUrl(`/api/images/${encodeURIComponent(image.image_id)}`);
+  return frameImageUrl(`/api/images/${encodeURIComponent(image.image_id)}`, image);
 }
 
 function preloadNearbyImages() {
@@ -407,44 +425,78 @@ async function fetchObjectImages(objectId) {
 async function applyRevealOnlyFilter() {
   if (!state.selectedObject) return;
   stopPlayback();
+  pointReview?.cancelGesture();
   pauseBlink();
   const objectId = state.selectedObject.object_id;
   const requestToken = state.imageRequestToken + 1;
   state.imageRequestToken = requestToken;
   const previousImageId = currentImage()?.image_id;
-  const images = await fetchObjectImages(objectId);
-  if (
-    state.imageRequestToken !== requestToken
-    || state.selectedObject?.object_id !== objectId
-  ) return;
-  state.images = images;
-  const preservedIndex = previousImageId
-    ? state.images.findIndex((image) => image.image_id === previousImageId)
-    : -1;
-  state.index = preservedIndex >= 0 ? preservedIndex : firstUnscoredIndex(state.images);
-  state.direction = 1;
-  renderCurrent();
+  state.objectLoading = true;
+  pointReview?.render();
+  try {
+    const images = await fetchObjectImages(objectId);
+    if (
+      state.imageRequestToken !== requestToken
+      || state.selectedObject?.object_id !== objectId
+    ) return;
+    state.images = images;
+    state.loadedObject = state.selectedObject;
+    const preservedIndex = previousImageId
+      ? state.images.findIndex((image) => image.image_id === previousImageId)
+      : -1;
+    state.index = preservedIndex >= 0 ? preservedIndex : firstUnscoredIndex(state.images);
+    state.direction = 1;
+    renderCurrent();
+  } finally {
+    if (state.imageRequestToken === requestToken) {
+      state.objectLoading = false;
+      pointReview?.render();
+    }
+  }
 }
 
 async function selectObject(object) {
   stopPlayback();
   pauseBlink();
+  pointReview?.cancelGesture();
   if (state.selectedObject?.object_id !== object.object_id) resetReveal();
-  const requestToken = state.imageRequestToken + 1;
-  state.imageRequestToken = requestToken;
+  const requestToken = ++state.imageRequestToken;
+  state.objectLoading = true;
   state.selectedObject = object;
-  const images = await fetchObjectImages(object.object_id);
-  if (
-    state.imageRequestToken !== requestToken
-    || state.selectedObject?.object_id !== object.object_id
-  ) return;
-  state.images = images;
-  state.index = firstUnscoredIndex(state.images);
-  state.direction = 1;
-  state.selectedTags.clear();
-  $("commentInput").value = "";
-  renderObjects();
-  renderCurrent();
+  pointReview?.render();
+  try {
+    const images = await fetchObjectImages(object.object_id);
+    if (state.imageRequestToken !== requestToken || state.selectedObject?.object_id !== object.object_id) return;
+    state.images = images;
+    state.loadedObject = object;
+    state.index = firstUnscoredIndex(state.images);
+    state.direction = 1;
+    state.selectedTags.clear();
+    $("commentInput").value = "";
+    renderObjects();
+    renderCurrent();
+  } catch (error) {
+    if (state.imageRequestToken === requestToken) {
+      state.selectedObject = state.loadedObject;
+      renderObjects();
+      renderCurrent();
+    }
+    throw error;
+  } finally {
+    if (state.imageRequestToken === requestToken) {
+      state.objectLoading = false;
+      pointReview?.render();
+    }
+  }
+}
+
+async function moveObject(delta) {
+  if (!state.objects.length) return;
+  const index = state.objects.findIndex(object => object.object_id === state.selectedObject?.object_id);
+  const next = index < 0 ? (delta > 0 ? 0 : state.objects.length - 1)
+    : (index + delta + state.objects.length) % state.objects.length;
+  if (state.objects[next].object_id === state.selectedObject?.object_id) return;
+  await selectObject(state.objects[next]);
 }
 
 function firstUnscoredIndex(images) {
@@ -506,6 +558,7 @@ function renderCurrent() {
 
   if (!image) {
     $("mainImage").removeAttribute("src");
+    pointReview?.beginFrame($("mainImage"), null, null);
     renderTrailOverlays();
     $("primaryFilename").textContent = "";
     $("metadata").replaceChildren();
@@ -531,7 +584,7 @@ function renderCurrent() {
 }
 
 function blinkSource(image) {
-  if (image?.comparison) return image.comparison.url ? imageUrl(image.comparison.url) : null;
+  if (image?.comparison) return image.comparison.url ? frameImageUrl(image.comparison.url, image.comparison) : null;
   const pair = image?.pairs?.[0];
   return pair ? primaryImageUrl(pair) : null;
 }
@@ -545,6 +598,7 @@ function renderComparison(image) {
   $("primaryCaption").hidden = !comparison;
   $("primaryCaption").textContent = "Original · scoring this image";
   const img = $("comparisonImage");
+  pointReview?.beginFrame(img, visible ? comparison : null, comparison?.url ? frameImageUrl(comparison.url, comparison) : null);
   img.hidden = !comparison?.url;
   $("comparisonFilename").textContent = comparison?.url
     ? filenameOnly(comparison.filename)
@@ -560,8 +614,10 @@ function renderComparison(image) {
   ].filter(Boolean).join(" · ");
   $("comparisonCaption").title = comparison.filename;
   $("comparisonStatus").textContent = "";
-  img.onload = applyDisplay;
+  const comparisonSrc = frameImageUrl(comparison.url, comparison);
+  img.onload = () => { pointReview?.loaded(img, comparisonSrc); applyDisplay(); };
   img.onerror = () => {
+    pointReview?.invalidate(img);
     $("comparisonTrailOverlay").hidden = true;
     if (currentImage()?.comparison?.url !== comparison.url) return;
     stopBlink();
@@ -570,19 +626,23 @@ function renderComparison(image) {
     $("blinkBtn").disabled = true;
     setImageSrc(primaryImageUrl(image));
   };
-  const comparisonSrc = imageUrl(comparison.url);
   if (!img.src.endsWith(comparisonSrc)) img.src = comparisonSrc;
+  else pointReview?.loaded(img, comparisonSrc);
 }
 
 function setImageSrc(src) {
   const img = $("mainImage");
+  const image = currentImage();
+  const frame = state.blinkEnabled && state.blinkOn ? (image?.comparison || image?.pairs?.[0]) : image;
+  pointReview?.beginFrame(img, frame, src);
   $("mainTrailOverlay").hidden = true;
   if (img.src.endsWith(src)) {
+    pointReview?.loaded(img, src);
     applyDisplay();
     return;
   }
-  img.onload = applyDisplay;
-  img.onerror = renderTrailOverlays;
+  img.onload = () => { pointReview?.loaded(img, src); applyDisplay(); };
+  img.onerror = () => { pointReview?.invalidate(img); renderTrailOverlays(); };
   img.src = src;
   renderTrailOverlays();
 }
@@ -619,6 +679,7 @@ function applyDisplay() {
     img.style.filter = `${invert} ${brightness} ${contrast}`;
   }
   renderTrailOverlays();
+  pointReview?.render();
 }
 
 function renderMetadata(image) {
@@ -689,7 +750,8 @@ function syncReviewControls(image) {
 }
 
 function move(delta) {
-  if (!state.images.length) return;
+  if (!state.images.length || state.objectLoading) return;
+  pointReview?.cancelGesture();
   state.index += delta;
   if (state.index >= state.images.length || state.index < 0) {
     if ($("pingPongInput").checked) {
@@ -710,7 +772,7 @@ function startPlayback() {
   stopPlayback();
   state.playing = true;
   $("playBtn").textContent = "Pause";
-  const tick = () => move(state.direction);
+  const tick = () => { if (!pointReview?.holding) move(state.direction); };
   state.timer = window.setInterval(tick, 1000 / Number($("rateInput").value));
 }
 
@@ -762,7 +824,7 @@ function syncBlink(image) {
   state.blinkImageId = image.image_id;
   const primarySrc = primaryImageUrl(image);
   state.blinkTimer = window.setInterval(() => {
-    if (currentImage()?.image_id !== image.image_id) return;
+    if (pointReview?.holding || state.objectLoading || currentImage()?.image_id !== image.image_id) return;
     state.blinkOn = !state.blinkOn;
     setImageSrc(state.blinkOn ? comparisonSrc : primarySrc);
     if (image.comparison) {
@@ -837,7 +899,7 @@ async function saveCurrentReviewEdits(options = {}) {
 
 async function scoreCurrent(score, status = "scored") {
   const image = currentImage();
-  if (!image) return;
+  if (!image || state.objectLoading) return;
   if (score !== null && (score < (state.summary?.score_min ?? 0) || score > (state.summary?.score_max ?? 9))) return;
   const wasReviewed = Boolean(image.score_status);
   const payload = {
@@ -984,7 +1046,7 @@ async function rescan() {
 }
 
 async function exportLabels() {
-  await flushPendingSaves();
+  await flushAllPendingSaves();
   const result = await api("/api/export", { method: "POST", body: "{}" });
   toast(`Exported ${result.classification_parquet}`);
 }
@@ -996,7 +1058,7 @@ async function shutdownReviewTool() {
   while (state.flushing) {
     await new Promise((resolve) => window.setTimeout(resolve, 50));
   }
-  await flushPendingSaves();
+  await flushAllPendingSaves();
   const result = await api("/api/shutdown", { method: "POST", body: "{}" });
   const reviewName = state.summary?.layout === "active-asteroids"
     ? "Active Asteroids Review"
@@ -1009,6 +1071,12 @@ async function shutdownReviewTool() {
       <p>You can close this tab.</p>
     </main>
   `;
+}
+
+async function flushAllPendingSaves() {
+  while (state.flushing) await new Promise(resolve => window.setTimeout(resolve, 50));
+  await flushPendingSaves();
+  await pointReview?.flush();
 }
 
 function queueScoreSave(payload) {
@@ -1150,6 +1218,18 @@ function escapeHtml(text) {
 }
 
 function wireEvents() {
+  if (pointReview) {
+    for (const prefix of ['main', 'comparison']) {
+      pointReview.attach($(`${prefix}Image`), $(`${prefix}PointOverlay`),
+        $(`${prefix}PointReadout`), $(`${prefix}PointClear`));
+    }
+    pointReview.bindStatus($('pointSaveStatus'), $('pointRetryBtn'), $('pointDiscardBtn'));
+    window.addEventListener('blur', () => pointReview.cancelGesture());
+    window.addEventListener('scroll', () => pointReview.cancelGesture(), true);
+    window.addEventListener('beforeunload', event => {
+      if (pointReview.queue.length) { event.preventDefault(); event.returnValue = ''; }
+    });
+  }
   const filterIds = [
     "searchInput",
     "productSelect",
@@ -1207,7 +1287,7 @@ function wireEvents() {
   });
   $("scaleSelect").addEventListener("change", applyDisplay);
   $("trailOverlayInput").addEventListener("change", renderTrailOverlays);
-  window.addEventListener("resize", applyDisplay);
+  window.addEventListener("resize", () => { pointReview?.cancelGesture(); applyDisplay(); });
   $("invertInput").addEventListener("change", applyDisplay);
   $("brightnessInput").addEventListener("input", applyDisplay);
   $("contrastInput").addEventListener("input", applyDisplay);
@@ -1216,7 +1296,15 @@ function wireEvents() {
     if (state.playing) startPlayback();
   });
   window.addEventListener("keydown", (event) => {
-    if ($("settingsDialog")?.open || event.target.matches("input, textarea, select")) return;
+    if (document.querySelector?.('dialog[open]') || $("settingsDialog")?.open
+        || event.target.matches("input, textarea, select") || event.target.isContentEditable
+        || event.target.closest?.('[contenteditable]:not([contenteditable="false"])')) return;
+    if (event.key === ',' || event.key === '.') {
+      if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || event.repeat || event.isComposing) return;
+      event.preventDefault();
+      moveObject(event.key === ',' ? -1 : 1).catch(error => toast(error.message));
+      return;
+    }
     if (/^[0-9]$/.test(event.key)) {
       event.preventDefault();
       scoreCurrent(Number(event.key)).catch((error) => toast(error.message));
@@ -1269,6 +1357,7 @@ function wireEvents() {
   });
   window.addEventListener("pagehide", () => {
     flushPendingSaves({ keepalive: true }).catch(console.error);
+    pointReview?.flush({ keepalive: true }).catch(console.error);
   });
 }
 

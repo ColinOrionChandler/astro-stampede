@@ -47,7 +47,7 @@ existing local stores explicitly. Label and index paths must differ.
 **SQLite labels are authoritative by default.** Startup does not import or merge
 snapshots, relocate databases, or split old databases. Only `--import-snapshot`
 explicitly imports a newer snapshot. That operation **replaces** scores, object
-reviews, and audit events; it is not a multi-reviewer merge. Choose the canonical
+reviews, image points, and audit events; it is not a multi-reviewer merge. Choose the canonical
 source before using it. A new installation alone never reconciles live data.
 
 CSV exports include stable IDs, relative image paths, labels and provenance.
@@ -56,3 +56,20 @@ recorded absolute source paths are omitted from CSV exports and ordinary review
 responses. The local Settings dialog explicitly displays configured paths.
 User-entered comments, tags and metadata are local content and may themselves
 contain private information: review exports before sharing them.
+
+## Point storage and exports
+
+Pixel marks live in the label database's `image_points` table, keyed by image
+target and reviewer. Existing stores gain this table without rewriting scores.
+Each point records integer x/y, source dimensions, a revision derived from the
+relative source identity, file size and modification time, and reviewer/session
+provenance. Replacements and clears also enter the audit event history. Primary
+and ordinary paired targets follow the existing classification identity policy;
+comparison targets are scoped by dataset and catalog identifier.
+
+Export includes `image_points_<timestamp>.csv`, with one row per saved point,
+including comparison and unscored-image points. Its source paths are relative.
+Portable Parquet snapshots use version 3 and include points and audit history.
+Versions 1 and 2 remain importable; explicit replacement from these older formats
+replaces the point collection with an empty collection. Older STAMPEDE releases
+cannot import version-3 snapshots. SQLite remains authoritative at normal startup.

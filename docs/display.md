@@ -44,3 +44,40 @@ Validate without opening classification stores:
 astro-stampede --root local/demo --manifest local/demo/manifest.csv \
   --dataset synthetic-demo --state-dir local/demo/state --validate
 ```
+
+## Image points
+
+Click a primary or comparison image to save one point for the current reviewer.
+The crosshair marks the center of the selected PNG pixel. Coordinates are integer
+column and row indices: `(0, 0)` is the top-left pixel, x increases rightward,
+and y increases downward. These are cutout PNG coordinates, without a FITS or
+sky-coordinate conversion. Fit, zoom, scrolling, and display filters do not
+change the saved coordinates.
+
+Another click replaces the point. **Clear point** removes it independently of
+the image's score, tags, and note. Points do not classify images or advance the
+queue. Primary and comparison frames have independent points; an ordinary paired
+image retains its point when viewed on its own. During blinking or playback,
+the visible frame is held from pointer-down through release, then animation
+continues. Drags, canceled gestures, unloaded images, and object transitions
+cannot record a point.
+
+**Points saved** confirms that all point changes reached SQLite. A failed write
+stays queued: use **Retry point saves**, or **Discard unsaved point changes** to
+restore the last saved state. Export, settings changes, and shutdown wait for
+point saves and stop if saving fails. When a source file changes, its older point
+is labeled stale and its crosshair is hidden. Rescan and reload the image before
+marking the new revision; discard any queued changes for the old revision first.
+
+## Object keyboard navigation
+
+Press **`,`** for the previous object and **`.`** for the next object. Navigation
+follows the displayed queue, including completed objects, and wraps at both ends.
+The current filters, batch, sort order, and existing 300-object display limit
+apply. A newly selected object opens its first unscored image, or its first image
+when all are scored. With no selection, period starts at the first object and
+comma at the last. Arrow keys still navigate images within an object.
+
+Object shortcuts are inactive in text fields, editable content, and dialogs;
+modifier combinations and held-key repeats are ignored. Changing objects stops
+playback while preserving the blink preference.

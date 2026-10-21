@@ -61,3 +61,8 @@ v2.3.0. Template citation: Oldag et al. (2024), *A Python Project Template for
 Healthy Scientific Software*, RNAAS 8, 141,
 [doi:10.3847/2515-5172/ad4da1](https://doi.org/10.3847/2515-5172/ad4da1).
 See [template customizations and updates](docs/template.md) and `CITATION.bib`.
+
+Image clicks save a reviewer-specific pixel point on the displayed primary or
+comparison frame. Press **`,`** / **`.`** to move between objects, wrapping through
+the displayed queue. See [image points and navigation](docs/display.md#image-points)
+and [point persistence](docs/persistence.md#point-storage-and-exports).

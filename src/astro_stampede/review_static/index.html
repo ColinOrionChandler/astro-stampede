@@ -149,7 +149,8 @@
             <h2 id="objectTitle">Choose an object</h2>
             <p id="objectSubtitle">Select an object from the queue to review its PNG cutouts.</p>
           </div>
-          <div class="counter" id="imageCounter">0 / 0</div>
+          <div><div class="counter" id="imageCounter">0 / 0</div>
+            <small class="object-shortcuts">Objects: <kbd>,</kbd> previous · <kbd>.</kbd> next (wraps)</small></div>
         </section>
 
         <section class="canvas-wrap">
@@ -159,16 +160,22 @@
               <div class="image-surface">
                 <img id="mainImage" alt="Review thumbnail" />
                 <canvas id="mainTrailOverlay" class="trail-overlay" role="img" hidden></canvas>
+                <span id="mainPointOverlay" class="point-overlay" aria-hidden="true" hidden></span>
               </div>
               <p class="image-filename" id="primaryFilename"></p>
+              <div class="point-controls"><span id="mainPointReadout" aria-live="polite">No point</span>
+                <button id="mainPointClear" disabled>Clear point</button></div>
             </figure>
             <figure class="image-panel" id="comparisonPanel" hidden>
               <figcaption id="comparisonCaption">Comparison</figcaption>
               <div class="image-surface">
                 <img id="comparisonImage" alt="Mapped comparison cutout" />
                 <canvas id="comparisonTrailOverlay" class="trail-overlay" role="img" hidden></canvas>
+                <span id="comparisonPointOverlay" class="point-overlay" aria-hidden="true" hidden></span>
               </div>
               <p class="image-filename" id="comparisonFilename"></p>
+              <div class="point-controls"><span id="comparisonPointReadout" aria-live="polite">No point</span>
+                <button id="comparisonPointClear" disabled>Clear point</button></div>
               <p id="comparisonStatus" role="status"></p>
             </figure>
           </div>
@@ -193,6 +200,13 @@
             <button id="clearBtn">Clear</button>
             <button id="undoBtn">Undo</button>
           </div>
+        </section>
+        <section>
+          <h2>Image points</h2>
+          <p class="point-help">Click an image to save a point. PNG pixels: (0, 0) at top left; x right, y down.</p>
+          <div id="pointSaveStatus" class="save-status" role="status">Points saved</div>
+          <button id="pointRetryBtn" hidden>Retry point saves</button>
+          <button id="pointDiscardBtn" hidden>Discard unsaved point changes</button>
         </section>
         <section>
           <h2>Display</h2>
@@ -223,6 +237,7 @@
     </div>
     <div class="toast" id="toast"></div>
     <script src="/static/trails.js"></script>
+    <script src="/static/points.js"></script>
     <dialog id="settingsDialog" aria-labelledby="settingsTitle">
       <form id="settingsForm">
         <h2 id="settingsTitle">Settings</h2>

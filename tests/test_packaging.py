@@ -14,5 +14,5 @@ def test_installed_version_and_entry_point():
 
 def test_packaged_browser_resources():
     static = files("astro_stampede").joinpath("review_static")
-    for name in ("index.html", "app.js", "settings.js", "trails.js", "styles.css"):
+    for name in ("index.html", "app.js", "settings.js", "trails.js", "points.js", "styles.css"):
         assert static.joinpath(name).read_bytes()

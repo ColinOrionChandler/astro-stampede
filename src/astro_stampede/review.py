@@ -40,7 +40,7 @@ from astro_stampede.adapters.rcc_names import (
     get_thumbnail_product_identity as get_thumbnail_product_identity,
 )
 
-from . import identities
+from . import identities, points
 
 DEFAULT_ROOT = Path(".")
 DEFAULT_PRODUCTS = ("preliminary_visit_image",)
@@ -1251,6 +1251,7 @@ def initialize_label_db(conn: sqlite3.Connection, schema: str = "main") -> None:
         """
     )
     identities.initialize(conn, schema)
+    points.initialize(conn, schema)
     conn.commit()
 
 
@@ -1374,7 +1375,13 @@ def write_classification_parquet(
                     "payload": row["payload"],
                 }
             )
-        for table in ("identity_registry", "identity_aliases", "identity_provenance", "review_metadata"):
+        for table in (
+            "identity_registry",
+            "identity_aliases",
+            "identity_provenance",
+            "review_metadata",
+            "image_points",
+        ):
             if table_exists(conn, table):
                 for row in conn.execute(f"SELECT * FROM {table}"):
                     records.append({"record_type": table, "payload": json.dumps(dict(row), sort_keys=True)})
@@ -1384,7 +1391,7 @@ def write_classification_parquet(
     if not records:
         records.append({"record_type": "snapshot"})
     for record in records:
-        record["snapshot_version"] = 2
+        record["snapshot_version"] = 3
         record["snapshot_exported_at"] = exported_at
 
     frame = pd.DataFrame(records, columns=CLASSIFICATION_SNAPSHOT_COLUMNS)
@@ -1456,7 +1463,7 @@ def import_classification_parquet(
     if missing_columns:
         raise ValueError(f"Unsupported classification snapshot; missing columns: {sorted(missing_columns)}")
     versions = {_parquet_value(value) for value in frame["snapshot_version"].unique()}
-    if versions not in ({1}, {2}):
+    if versions not in ({1}, {2}, {3}):
         raise ValueError(f"Unsupported classification snapshot version(s): {versions!r}")
     exported_values = [str(value) for value in frame["snapshot_exported_at"].dropna().unique().tolist()]
     if len(exported_values) != 1:
@@ -1480,14 +1487,18 @@ def import_classification_parquet(
             for row in frame.to_dict(orient="records")
         ]
         allowed = {"snapshot", "image_score", "object_review", "review_event"}
-        if versions == {2}:
+        if versions in ({2}, {3}):
             allowed.update(
                 {"identity_registry", "identity_aliases", "identity_provenance", "review_metadata"}
             )
+        if versions == {3}:
+            allowed.add("image_points")
         if any(row["record_type"] not in allowed for row in rows):
             raise ValueError("Unsupported snapshot record type.")
-        # Validate identity metadata before beginning replacement.
+        # Validate durable point and identity metadata before beginning replacement.
         for row in rows:
+            if row["record_type"] == "image_points":
+                points.validate_record(json.loads(row["payload"]))
             if row["record_type"] in {
                 "identity_registry",
                 "identity_aliases",
@@ -1506,6 +1517,7 @@ def import_classification_parquet(
         conn.execute("BEGIN IMMEDIATE")
         for table in ("identity_registry", "identity_aliases", "identity_provenance", "review_metadata"):
             conn.execute(f"DELETE FROM {table}")
+        conn.execute("DELETE FROM image_points")
         conn.execute("DELETE FROM image_scores")
         conn.execute("DELETE FROM object_reviews")
         conn.execute("DELETE FROM review_events")
@@ -1567,6 +1579,7 @@ def import_classification_parquet(
                     ),
                 )
             elif row["record_type"] in {
+                "image_points",
                 "identity_registry",
                 "identity_aliases",
                 "identity_provenance",
@@ -1578,7 +1591,7 @@ def import_classification_parquet(
                     f"INSERT INTO {row['record_type']} ({columns}) VALUES ({','.join('?' for _ in value)})",
                     tuple(value.values()),
                 )
-        if versions == {2}:
+        if versions in ({2}, {3}):
             invalid = conn.execute(
                 "SELECT COUNT(*) FROM identity_aliases a LEFT JOIN identity_registry r ON a.entity_kind=r.entity_kind AND a.canonical_id=r.canonical_id WHERE r.canonical_id IS NULL"
             ).fetchone()[0]
@@ -3088,6 +3101,7 @@ def export_reviews(config: ReviewConfig) -> dict[str, str]:
     object_csv = export_dir / f"thumbnail_activity_object_summary_{stamp}.csv"
     conflicts_csv = export_dir / f"thumbnail_identity_conflicts_{stamp}.csv"
     events_jsonl = export_dir / f"thumbnail_activity_events_{stamp}.jsonl"
+    points_csv = export_dir / f"image_points_{stamp}.csv"
     expert_csv = (
         export_dir / f"active_asteroids_expert_scores_{stamp}.csv"
         if config.layout == "active-asteroids" or config.dataset == ACTIVE_ASTEROIDS_PRODUCT
@@ -3145,6 +3159,8 @@ def export_reviews(config: ReviewConfig) -> dict[str, str]:
             "SELECT * FROM identity_conflicts ORDER BY entity_kind, canonical_id, reviewer"
         ).fetchall()
         event_rows = conn.execute("SELECT * FROM review_events ORDER BY event_id").fetchall()
+        point_rows = conn.execute("SELECT * FROM image_points ORDER BY target_id, reviewer").fetchall()
+        point_columns = [row[1] for row in conn.execute("PRAGMA labels.table_info(image_points)")]
         expert_rows = (
             conn.execute(
                 """
@@ -3177,6 +3193,10 @@ def export_reviews(config: ReviewConfig) -> dict[str, str]:
     write_csv(image_csv, image_rows)
     write_csv(object_csv, object_rows)
     write_csv(conflicts_csv, conflict_rows)
+    with points_csv.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=point_columns)
+        writer.writeheader()
+        writer.writerows(dict(row) for row in point_rows)
     if expert_csv is not None:
         with expert_csv.open("w", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(
@@ -3202,6 +3222,7 @@ def export_reviews(config: ReviewConfig) -> dict[str, str]:
         "object_summary_csv": str(object_csv),
         "identity_conflicts_csv": str(conflicts_csv),
         "events_jsonl": str(events_jsonl),
+        "image_points_csv": str(points_csv),
         "classification_parquet": str(classification_snapshot["parquet"]),
     }
     if expert_csv is not None:
@@ -3337,6 +3358,7 @@ class ThumbnailReviewHandler(BaseHTTPRequestHandler):
                     if self.server.comparisons is not None:
                         self.server.comparisons.annotate(images)
                     trails.annotate(images, legacy=self.config.layout != "manifest")
+                    points.annotate(conn, self.config, self.server.comparisons, images)
                     self._send_json(images)
             elif path.startswith("/api/objects/") and path.endswith("/reveal"):
                 object_id = unquote(path.removeprefix("/api/objects/").removesuffix("/reveal"))
@@ -3431,6 +3453,13 @@ class ThumbnailReviewHandler(BaseHTTPRequestHandler):
                     result = upsert_object_review(conn, self.config, payload)
                     conn.commit()
                 self._send_json(result)
+            elif path in {"/api/image-point", "/api/image-point/clear"}:
+                with connect_review_db(self.config) as conn:
+                    result = points.save(
+                        conn, self.config, self.server.comparisons, payload, clear=path.endswith("/clear")
+                    )
+                    conn.commit()
+                self._send_json(result)
             elif path == "/api/image-score":
                 with connect_review_db(self.config) as conn:
                     result = upsert_image_score(conn, self.config, payload)
@@ -3456,6 +3485,10 @@ class ThumbnailReviewHandler(BaseHTTPRequestHandler):
                 self._send_json(result)
             else:
                 self._send_error_json("not found", HTTPStatus.NOT_FOUND)
+        except points.StalePointError as exc:
+            self._send_error_json(str(exc), HTTPStatus.CONFLICT)
+        except points.PointError as exc:
+            self._send_error_json(str(exc))
         except settings.SettingsError as exc:
             self._send_error_json(str(exc))
         except Exception:
@@ -3463,7 +3496,7 @@ class ThumbnailReviewHandler(BaseHTTPRequestHandler):
 
     def _serve_static(self, relative: str) -> None:
         static_root = resources.files("astro_stampede").joinpath("review_static")
-        if relative not in {"app.js", "settings.js", "trails.js", "index.html", "styles.css"}:
+        if relative not in {"app.js", "settings.js", "trails.js", "points.js", "index.html", "styles.css"}:
             self._send_error_json("static file not found", HTTPStatus.NOT_FOUND)
             return
         target = static_root.joinpath(relative)

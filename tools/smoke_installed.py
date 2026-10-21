@@ -27,7 +27,9 @@ def running_server(config):
 
     def request(path, payload=None):
         data = None if payload is None else json.dumps(payload).encode()
-        with urlopen(Request(base + path, data=data), timeout=10) as response:
+        # A fresh installation may need time for its first pandas/Arrow import.
+        timeout = 60 if path == "/api/export" else 10
+        with urlopen(Request(base + path, data=data), timeout=timeout) as response:
             return response.read()
 
     try:
@@ -53,7 +55,7 @@ def main():
         review.index_thumbnails(config)
         with running_server(config) as request:
             assert b"Astro Stampede" in request("/")
-            for name in ("app.js", "settings.js", "trails.js", "styles.css"):
+            for name in ("app.js", "settings.js", "trails.js", "points.js", "styles.css"):
                 assert request("/static/" + name)
             objects = json.loads(request("/api/objects"))
             object_id = objects[0]["object_id"]
@@ -64,10 +66,26 @@ def main():
             assert primary.startswith(review.PNG_SIGNATURE)
             assert comparison.startswith(review.PNG_SIGNATURE) and comparison != primary
             request("/api/image-score", {"image_id": image_id, "score": 6})
+            for frame in (images[0], images[0]["comparison"]):
+                target = frame["point_target"]
+                request(
+                    "/api/image-point",
+                    {
+                        "target_id": target["target_id"],
+                        "source_revision": target["source_revision"],
+                        "x": 15,
+                        "y": 16,
+                    },
+                )
         review.index_thumbnails(config)
         with running_server(config) as request:
             images = json.loads(request(f"/api/objects/{object_id}/images"))
-            assert next(row for row in images if row["image_id"] == image_id)["score"] == 6
+            restored = next(row for row in images if row["image_id"] == image_id)
+            assert restored["score"] == 6
+            assert restored["point"]["x"] == 15
+            assert restored["comparison"]["point"]["y"] == 16
+            exports = json.loads(request("/api/export", {}))
+            assert (config.export_dir / exports["image_points_csv"]).is_file()
         assert all(hashlib.sha256(path.read_bytes()).digest() == digest for path, digest in hashes.items())
     print(f"Installed distribution smoke test passed: {astro_stampede.__version__}")
 

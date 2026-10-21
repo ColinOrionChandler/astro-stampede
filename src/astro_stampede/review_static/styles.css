@@ -585,3 +585,25 @@ dialog h2 { margin-top: 0; }
 #folderEntries { display: grid; gap: 6px; }
 #folderEntries button { text-align: left; overflow-wrap: anywhere; }
 #settingsApply { border-color: var(--accent); }
+
+/* Markers sit over the image and retain their color under display filters. */
+.point-overlay {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  filter: drop-shadow(0 0 1px #000) drop-shadow(0 0 1px #000);
+}
+.point-overlay::before, .point-overlay::after {
+  content: "";
+  position: absolute;
+  background: #ffcc33;
+}
+.point-overlay::before { left: 8px; top: 0; width: 2px; height: 18px; }
+.point-overlay::after { left: 0; top: 8px; width: 18px; height: 2px; }
+.point-overlay[hidden], #pointRetryBtn[hidden], #pointDiscardBtn[hidden] { display: none; }
+.point-controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 12px; }
+.point-controls button { font-size: 12px; padding: 4px 8px; }
+.point-help, .object-shortcuts { color: var(--muted); font-size: 12px; }
+#mainImage, #comparisonImage { cursor: crosshair; }
