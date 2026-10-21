@@ -16,6 +16,10 @@ from pathlib import Path
 from . import identities as ids
 
 
+class IncompleteCompatibilityError(ValueError):
+    """Automatic registration cannot safely account for all historical state."""
+
+
 def read_evidence(indexes=(), exports=(), manifests=(), legacy_dataset=None):
     for path in indexes:
         with sqlite3.connect(f"{Path(path).resolve().as_uri()}?mode=ro", uri=True) as conn:
@@ -68,6 +72,9 @@ def mappings(evidence, policy=ids.Policy()):
             problems.append(f"{source}: {exc}")
             continue
         entries = [("image", old, canonical, key, name)]
+        product_id = row.get("product_image_id")
+        if product_id and product_id != old:
+            entries.append(("image", product_id, canonical, key, name))
         dataset = row.get("product") or row.get("dataset")
         obj = row.get("object_name")
         if dataset and obj:
@@ -87,6 +94,9 @@ def mappings(evidence, policy=ids.Policy()):
 
 
 def fingerprint(conn):
+    tables = ["image_scores", "object_reviews", "review_events"]
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE name='image_points' AND type='table'").fetchone():
+        tables.append("image_points")
     return {
         table: {
             "rows": conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0],
@@ -94,11 +104,13 @@ def fingerprint(conn):
                 ids.encoded([list(r) for r in conn.execute(f"SELECT * FROM {table} ORDER BY 1,2")]).encode()
             ).hexdigest(),
         }
-        for table in ("image_scores", "object_reviews", "review_events")
+        for table in tables
     }
 
 
-def preflight(db, evidence, policy=ids.Policy(), *, apply=False, accept_policy_change=False):
+def preflight(
+    db, evidence, policy=ids.Policy(), *, apply=False, accept_policy_change=False, require_complete=False
+):
     mapping, problems, ignored, contradictions = mappings(evidence, policy)
     path = Path(db).resolve()
     conn = sqlite3.connect(f"{path.as_uri()}?mode={'rw' if apply else 'ro'}", uri=True)
@@ -120,12 +132,33 @@ def preflight(db, evidence, policy=ids.Policy(), *, apply=False, accept_policy_c
                 contradictions.append(f"{entry[0]}:{entry[1]} conflicts with registered identity")
         unmapped = {}
         for kind, table in [("image", "image_scores"), ("object", "object_reviews")]:
+            historical = {r[0] for r in conn.execute(f"SELECT DISTINCT {kind}_id FROM {table}")}
+            if require_complete:
+                historical.update(
+                    r[0]
+                    for r in conn.execute(
+                        f"SELECT DISTINCT {kind}_id FROM review_events WHERE {kind}_id IS NOT NULL"
+                    )
+                )
             unmapped[kind] = [
+                old
+                for old in sorted(historical)
+                if (kind, old) not in mapping and (kind, old) not in registry and (kind, old) not in aliases
+            ]
+        if require_complete and "image_points" in existing_tables:
+            # Point targets are already canonical. Never silently rekey a pixel
+            # mark or leave it accessible only under an obsolete target ID.
+            targets = {
+                canonical
+                for (kind, _), entry in mapping.items()
+                if kind == "image"
+                for canonical in entry["targets"]
+            }
+            targets.update(canonical for kind, canonical in registry if kind == "image")
+            unmapped["point"] = [
                 r[0]
-                for r in conn.execute(f"SELECT DISTINCT {kind}_id FROM {table}")
-                if (kind, r[0]) not in mapping
-                and (kind, r[0]) not in registry
-                and (kind, r[0]) not in aliases
+                for r in conn.execute("SELECT DISTINCT target_id FROM image_points WHERE kind='image'")
+                if r[0] not in targets
             ]
         prior = conn.execute("SELECT value FROM review_metadata WHERE key='identity_policy'").fetchone()
         policy_changed = bool(prior and prior[0] != ids.encoded(policy.document()))
@@ -149,6 +182,13 @@ def preflight(db, evidence, policy=ids.Policy(), *, apply=False, accept_policy_c
                 "SELECT COUNT(*) FROM effective_image_scores"
             ).fetchone()[0]
         if apply:
+            if require_complete and (any(unmapped.values()) or contradictions or problems or policy_changed):
+                raise IncompleteCompatibilityError(
+                    "Automatic identity recovery needs more evidence or review: "
+                    f"{sum(len(v) for v in unmapped.values())} unmapped historical IDs/point targets, "
+                    f"{len(contradictions)} contradictory mappings, {len(problems)} invalid evidence rows, "
+                    f"policy change={policy_changed}. No aliases were registered."
+                )
             if contradictions or problems:
                 raise ValueError(
                     "Contradictory or invalid evidence; no aliases registered: " + ids.encoded(result)
@@ -172,6 +212,11 @@ def preflight(db, evidence, policy=ids.Policy(), *, apply=False, accept_policy_c
             result["effective_images"] = conn.execute(
                 "SELECT COUNT(*) FROM effective_image_scores"
             ).fetchone()[0]
+            if require_complete and result["conflicts"]:
+                raise IncompleteCompatibilityError(
+                    f"Automatic identity recovery found {len(result['conflicts'])} unresolved classification conflicts. "
+                    "No aliases were registered."
+                )
             if fingerprint(conn) != before:
                 raise RuntimeError("Historical records changed during alias registration.")
             conn.commit()
@@ -193,6 +238,11 @@ def main(argv=None):
     parser.add_argument("--identity-include-class", action="store_true")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--accept-policy-change", action="store_true")
+    parser.add_argument(
+        "--require-complete",
+        action="store_true",
+        help="Include audit-only IDs and point targets; require complete mappings and no unresolved conflicts when applying.",
+    )
     parser.add_argument("--report", type=Path)
     args = parser.parse_args(argv)
     result = preflight(
@@ -201,6 +251,7 @@ def main(argv=None):
         ids.Policy(args.identity_key, args.identity_namespace, args.identity_include_class),
         apply=args.apply,
         accept_policy_change=args.accept_policy_change,
+        require_complete=args.require_complete,
     )
     text = json.dumps(result, indent=2)
     if args.report:

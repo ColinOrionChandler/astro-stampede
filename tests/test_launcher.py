@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from astro_stampede import cli, points, review
+from astro_stampede import cli, compatibility, points, review
 from astro_stampede.adapters.comparisons import load_comparisons
 from astro_stampede.demo import png_bytes
 
@@ -105,7 +105,8 @@ def test_only_default_index_enables_recovery(tmp_path, monkeypatch, explicit):
     assert captured[0]["recover_index"] is (not explicit)
 
 
-def test_root_dot_rebuilds_nested_bundle_index(tmp_path, monkeypatch):
+@pytest.mark.parametrize("legacy", [False, True])
+def test_root_dot_rebuilds_nested_bundle_index(tmp_path, monkeypatch, legacy):
     _, root, _ = bundle(tmp_path, nested=True)
     launched = []
 
@@ -135,17 +136,26 @@ def test_root_dot_rebuilds_nested_bundle_index(tmp_path, monkeypatch):
             dict(target_id=target["target_id"], source_revision=target["source_revision"], x=5, y=6),
         )
         review.upsert_image_score(conn, config, dict(image_id=images[0]["image_id"], score=8))
+        if legacy:
+            conn.execute("UPDATE main.images SET image_id='legacy-image', product_image_id='legacy-image'")
+            conn.execute("UPDATE image_scores SET image_id='legacy-image'")
+            conn.execute("UPDATE review_events SET image_id='legacy-image' WHERE image_id IS NOT NULL")
+            for table in ("identity_registry", "identity_aliases", "identity_provenance", "review_metadata"):
+                conn.execute(f"DELETE FROM labels.{table}")
         conn.execute("UPDATE index_metadata SET value=? WHERE key='binding'", (json.dumps(["old-root"]),))
         conn.commit()
     with closing(sqlite3.connect(config.db_path)) as conn:
         before = list(conn.iterdump())
+        historical = compatibility.fingerprint(conn)
     cli.main(["--root", ".", "--no-open"])
     recovered = launched[-1]
     assert recovered.root == root
     assert recovered.db_path == config.db_path
     assert recovered.index_db_path != config.index_db_path
     with closing(sqlite3.connect(config.db_path)) as conn:
-        assert list(conn.iterdump()) == before
+        if not legacy:
+            assert list(conn.iterdump()) == before
+        assert compatibility.fingerprint(conn) == historical
     with review.connect_review_db(recovered) as conn:
         images = review.query_object_images(conn, oid, config.reviewer)
         points.annotate(conn, recovered, None, images)

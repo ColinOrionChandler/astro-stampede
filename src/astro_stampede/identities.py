@@ -14,6 +14,10 @@ from .adapters.rcc_names import get_thumbnail_product_identity
 VERSION = 2
 
 
+class LegacyIdentityError(ValueError):
+    """Historical classifications lack a registered identity policy."""
+
+
 def encoded(value):
     return json.dumps(value, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
 
@@ -162,7 +166,7 @@ def require_policy(conn, policy):
             for table in ("image_scores", "object_reviews")
         )
         if count:
-            raise ValueError(
+            raise LegacyIdentityError(
                 "Existing classifications require an identity compatibility preflight; select legacy indexes or rich exports explicitly."
             )
         conn.execute(f"INSERT INTO {schema}.review_metadata VALUES ('identity_policy', ?)", (value,))

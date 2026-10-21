@@ -47,6 +47,13 @@ or identity settings is rebuilt in a separate cache file. This lets
 retained, and later launches reuse the replacement cache. The label database,
 classifications, image points, and audit history stay in place; recovery does not
 import a snapshot or override the label database's identity policy.
+If an older label store has classifications but no identity policy, startup uses
+the retained default index to check the historical IDs against thumbnail names.
+It registers aliases only when all historical IDs and primary point targets are
+accounted for and no unresolved conflicts exist. Original score, object-review,
+point, and audit rows are verified unchanged. Missing or contradictory evidence
+stops startup with the database/index paths and instructions for a read-only
+[compatibility report](identity.md).
 
 `--db`, `--index-db`, `--classification-parquet`, and `--export-dir` can select
 existing local stores explicitly. Label and index paths must differ.

@@ -1861,10 +1861,14 @@ def recover_default_index(config: ReviewConfig) -> ReviewConfig:
 
     def binding_at(path):
         with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)) as conn:
-            if not table_exists(conn, "index_metadata"):
-                return None
-            row = conn.execute("SELECT value FROM index_metadata WHERE key='binding'").fetchone()
-            return row[0] if row else None
+            if table_exists(conn, "index_metadata"):
+                row = conn.execute("SELECT value FROM index_metadata WHERE key='binding'").fetchone()
+                if row:
+                    return row[0]
+            # An unbound legacy cache is evidence, not an empty new database.
+            if table_exists(conn, "images") and conn.execute("SELECT 1 FROM images LIMIT 1").fetchone():
+                return "legacy-unbound"
+            return None
 
     path = config.index_db_path
     expected = index_binding(config)
@@ -3666,10 +3670,38 @@ def serve(
     manifest_rows=None,
     recover_index: bool = False,
 ) -> None:
+    original_index = config.index_db_path
     if recover_index:
         config = recover_default_index(config)
     prepare_classification_state(config)
-    summary = index_thumbnails(config, manifest_rows=manifest_rows)
+    try:
+        summary = index_thumbnails(config, manifest_rows=manifest_rows)
+    except identities.LegacyIdentityError:
+        if not recover_index:
+            raise
+        from . import compatibility
+
+        try:
+            result = compatibility.preflight(
+                config.db_path,
+                compatibility.read_evidence(indexes=[original_index]),
+                identities.Policy.from_config(config),
+                apply=True,
+                require_complete=True,
+            )
+        except (ValueError, OSError, sqlite3.Error) as exc:
+            raise ValueError(
+                f"{exc}\nRetained legacy index: {original_index}\n"
+                f"Label database: {config.db_path}\n"
+                "Run python -m astro_stampede.compatibility --require-complete with --db and --index pointing to these files "
+                "for a read-only report; add explicitly selected --index or --export evidence if needed."
+            ) from exc
+        print(
+            f"[astro-stampede] Reconnected {result['effective_images']} reviewer classifications using "
+            "the retained index; original scores, points, and audit history are unchanged.",
+            flush=True,
+        )
+        summary = index_thumbnails(config, manifest_rows=manifest_rows)
     server = build_server(config, host, port, quiet=quiet, manifest_rows=manifest_rows)
     url = f"http://{host}:{server.server_address[1]}/"
     print(f"[astro-stampede] Indexed {summary['records']} images; serving {url}", flush=True)

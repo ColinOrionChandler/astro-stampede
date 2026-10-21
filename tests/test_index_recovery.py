@@ -7,7 +7,7 @@ from dataclasses import replace
 
 import pytest
 
-from astro_stampede import cli, manifest, points, review
+from astro_stampede import cli, compatibility, manifest, points, review
 
 
 def label_rows(config):
@@ -166,3 +166,121 @@ def test_validation_does_not_recover_or_write_state(config):
         ]
     )
     assert {path: path.read_bytes() for path in config.db_path.parent.iterdir() if path.is_file()} == before
+
+
+def make_legacy_store(config):
+    """Model an upgrade from old image IDs with no identity-policy metadata."""
+    oid = seed_reviews(config)
+    with closing(sqlite3.connect(config.index_db_path)) as conn:
+        images = [row[0] for row in conn.execute("SELECT image_id FROM images")]
+        objects = [row[0] for row in conn.execute("SELECT DISTINCT object_id FROM images")]
+        for iid in images:
+            conn.execute(
+                "UPDATE images SET image_id=?, product_image_id=? WHERE image_id=?",
+                ("source-" + iid, "old-" + iid, iid),
+            )
+        for obj in objects:
+            conn.execute("UPDATE images SET object_id=? WHERE object_id=?", ("old-" + obj, obj))
+        conn.commit()
+    with closing(sqlite3.connect(config.db_path)) as conn:
+        for kind, ids, table in (("image", images, "image_scores"), ("object", objects, "object_reviews")):
+            for value in ids:
+                conn.execute(f"UPDATE {table} SET {kind}_id=? WHERE {kind}_id=?", ("old-" + value, value))
+                conn.execute(
+                    f"UPDATE review_events SET {kind}_id=? WHERE {kind}_id=?", ("old-" + value, value)
+                )
+        for table in ("identity_registry", "identity_aliases", "identity_provenance", "review_metadata"):
+            conn.execute(f"DELETE FROM {table}")
+        conn.commit()
+    mismatch(config)
+    return oid
+
+
+@pytest.mark.parametrize("unbound", [False, True])
+def test_legacy_upgrade_reconnects_scores_and_preserves_raw_history(config, monkeypatch, unbound):
+    oid = make_legacy_store(config)
+    if unbound:
+        with closing(sqlite3.connect(config.index_db_path)) as conn:
+            conn.execute("DROP TABLE index_metadata")
+            conn.commit()
+    with closing(sqlite3.connect(config.db_path)) as conn:
+        before = compatibility.fingerprint(conn)
+    original_index = config.index_db_path.read_bytes()
+    launched = stop_after_start(monkeypatch)
+    for _ in range(2):
+        review.serve(config, host="127.0.0.1", port=0, open_browser=False, recover_index=True)
+        recovered = launched[-1]
+        with review.connect_review_db(recovered) as conn:
+            for reviewer in (config.reviewer, "second-reviewer"):
+                current = replace(recovered, reviewer=reviewer)
+                images = review.query_object_images(conn, oid, reviewer)
+                catalog = manifest.comparisons(current)
+                catalog.annotate(images)
+                points.annotate(conn, current, catalog, images)
+                assert images[0]["score"] == 7
+                assert images[0]["point"]["x"] == images[0]["comparison"]["point"]["x"] == 3
+            assert conn.execute("SELECT COUNT(*) FROM effective_object_reviews").fetchone()[0] == 2
+        with closing(sqlite3.connect(config.db_path)) as conn:
+            assert compatibility.fingerprint(conn) == before
+            assert conn.execute("SELECT COUNT(*) FROM identity_aliases").fetchone()[0] > 0
+        assert config.index_db_path.read_bytes() == original_index
+
+
+@pytest.mark.parametrize("missing", ["score", "object", "event", "point"])
+def test_incomplete_legacy_recovery_preserves_store_and_explains_evidence(config, missing):
+    make_legacy_store(config)
+    with closing(sqlite3.connect(config.db_path)) as conn:
+        table, field = {
+            "score": ("image_scores", "image_id"),
+            "object": ("object_reviews", "object_id"),
+            "event": ("review_events", "image_id"),
+            "point": ("image_points", "target_id"),
+        }[missing]
+        conn.execute(f"UPDATE {table} SET {field}='unmapped' WHERE rowid=(SELECT MIN(rowid) FROM {table})")
+        conn.commit()
+    before = label_rows(config)
+    with pytest.raises(ValueError, match="unmapped historical") as exc:
+        review.serve(config, host="127.0.0.1", port=0, open_browser=False, recover_index=True)
+    assert str(config.index_db_path) in str(exc.value)
+    assert "read-only report" in str(exc.value)
+    assert label_rows(config) == before
+
+
+def test_legacy_conflict_rolls_back_registration(config):
+    make_legacy_store(config)
+    with closing(sqlite3.connect(config.index_db_path)) as conn:
+        source, old = conn.execute(
+            "SELECT image_id, product_image_id FROM images ORDER BY relative_path LIMIT 1"
+        ).fetchone()
+    with closing(sqlite3.connect(config.db_path)) as conn:
+        row = list(conn.execute("SELECT * FROM image_scores WHERE image_id=? LIMIT 1", (old,)).fetchone())
+        row[0], row[2], row[-2] = source, 1, "unattributed-session"
+        conn.execute("INSERT INTO image_scores VALUES (?,?,?,?,?,?,?,?)", row)
+        conn.commit()
+    before = label_rows(config)
+    with pytest.raises(ValueError, match="unresolved classification conflicts"):
+        review.serve(config, host="127.0.0.1", port=0, open_browser=False, recover_index=True)
+    assert label_rows(config) == before
+
+
+def test_contradictory_retained_index_does_not_register_aliases(config):
+    make_legacy_store(config)
+    with closing(sqlite3.connect(config.index_db_path)) as conn:
+        rows = conn.execute("SELECT image_id, product_image_id FROM images ORDER BY relative_path").fetchall()
+        conn.execute("UPDATE images SET product_image_id=? WHERE image_id=?", (rows[0][1], rows[1][0]))
+        conn.commit()
+    before = label_rows(config)
+    with pytest.raises(ValueError, match="contradictory mappings"):
+        review.serve(config, host="127.0.0.1", port=0, open_browser=False, recover_index=True)
+    assert label_rows(config) == before
+
+
+def test_explicit_legacy_index_does_not_register_aliases(config):
+    make_legacy_store(config)
+    with closing(sqlite3.connect(config.index_db_path)) as conn:
+        conn.execute("UPDATE index_metadata SET value=? WHERE key='binding'", (review.index_binding(config),))
+        conn.commit()
+    before = label_rows(config)
+    with pytest.raises(ValueError, match="identity compatibility preflight"):
+        review.serve(config, host="127.0.0.1", port=0, open_browser=False)
+    assert label_rows(config) == before

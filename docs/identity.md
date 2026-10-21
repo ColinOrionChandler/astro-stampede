@@ -31,12 +31,23 @@ an explicit compatibility preflight.
 
 ## Existing classification stores
 
+Default-index launches such as `astro-stampede --root .` can reconnect older
+classifications automatically using the retained original index. Startup checks
+every scored/reviewed ID, audit-only ID, and primary point target, and requires
+unambiguous mappings with no unresolved classification conflicts. Alias
+registration is transactional in the same label database; fingerprints verify
+that scores, object reviews, audit events, and image points remain unchanged.
+Recovery does not scan unrelated indexes or change an existing identity policy.
+If evidence is incomplete, it stops and prints the paths needed for the report
+below. Explicit index launches retain the manual preflight workflow.
+
 Before first use of a legacy store, stop its writers and run a read-only audit
 with explicitly selected sources that contain both old IDs and filenames:
 
 ```sh
 python -m astro_stampede.compatibility --db labels.sqlite \
-  --index old-index.sqlite --export rich-labels.csv --report compatibility.json
+  --index old-index.sqlite --export rich-labels.csv --require-complete \
+  --report compatibility.json
 ```
 
 `--index` and `--export` are repeatable. Legacy generic manifests use
@@ -46,7 +57,9 @@ guessing. The report includes raw-table fingerprints, mapping coverage, effectiv
 classification counts, and unresolved conflicts. Review those results before
 repeating the command with `--apply`. The apply transaction rechecks evidence,
 registers aliases in the **same SQLite database**, and verifies unchanged raw
-score, object-review and audit-event rows. Repeating registration is idempotent.
+score, object-review, point and audit-event rows. Repeating registration is idempotent.
+`--require-complete` includes audit-only references and point targets, and refuses
+to apply incomplete mappings or unresolved classification conflicts.
 Unmapped records remain in the store and snapshots. Contradictory mappings abort
 the transaction. Use additional explicit evidence to reconnect unmapped records.
 
@@ -65,9 +78,9 @@ immutable: changing namespace or adding class creates separate identities and
 does not reassign prior canonical classifications. Legacy alias contradictions
 still require resolution and are never silently overwritten.
 
-Snapshot **version 2** preserves all historical score rows and audit events plus
-the registry, aliases, provenance and policy. Version 1 remains importable via
-`--import-snapshot`; it requires a compatibility preflight before review because
-it contains no filename mappings. Imports remain explicit replacements. Effective
+Snapshot **versions 2 and 3** preserve all historical score rows and audit events
+plus the registry, aliases, provenance and policy; version 3 also includes image
+points. Version 1 remains importable via `--import-snapshot`; it needs compatibility
+evidence before review because it contains no filename mappings. Imports remain explicit replacements. Effective
 CSV exports expose canonical IDs and recoverable names; snapshots retain the
 original historical IDs. Exports also include a separate identity-conflict CSV.
